@@ -1,0 +1,31 @@
+[project]
+name = "nivo-reader"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "dnstudent", email = "davide.nicoli@unimi.it" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "easyocr>=1.7.2",
+    "fancy-dataclass>=0.10.1",
+    "fastexcel>=0.16.0",
+    "img2table>=1.4.2",
+    "numpy>=2.3.5",
+    "opencv-contrib-python-headless>=4.11.0.86",
+    "openpyxl>=3.1.5",
+    "pillow>=12.0.0",
+    "polars>=1.35.2",
+    "polars-distance>=0.5.3",
+    "scikit-learn>=1.7.2",
+    "scipy>=1.16.3",
+    "tqdm>=4.67.1",
+]
+
+[project.scripts]
+nivo-reader = "nivo_reader:main"
+
+[build-system]
+requires = ["uv_build>=0.9.9,<0.10.0"]
+build-backend = "uv_build"
