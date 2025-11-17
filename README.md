@@ -42,13 +42,19 @@ python process_nivo_images.py \
 
 ## Requisiti
 
-- `cv2` (OpenCV)
+Installabili tramite
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+- `python-opencv` (OpenCV)
 - `numpy`
 - `easyocr`
 - `PIL` (Pillow)
 - `polars`
 - `openpyxl`
 - `tqdm`
-- `scikit-learn` (per clustering)
+- `scikit-learn`
 - `scipy`
 - `img2table`

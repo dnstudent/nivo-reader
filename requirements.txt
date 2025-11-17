@@ -1,0 +1,13 @@
+easyocr
+fancy-dataclass
+fastexcel
+img2table
+numpy
+opencv-contrib-python-headless
+openpyxl
+pillow
+polars
+polars-distance
+scikit-learn
+scipy
+tqdm
