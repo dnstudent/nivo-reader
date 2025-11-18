@@ -1,12 +1,13 @@
 """Excel output utilities for NIVO table data."""
 
-from typing import Any
 from pathlib import Path
+from typing import Any
+
 import cv2
 import openpyxl
 import openpyxl.utils
-from openpyxl.styles import Font, Alignment, PatternFill
 from cv2.typing import MatLike
+from openpyxl.styles import Alignment, Font, PatternFill
 
 
 def write_tables_to_excel(
@@ -128,6 +129,7 @@ def write_tables_to_excel(
             sheet.column_dimensions[column_letter].width = adjusted_width
 
     # Save workbook
+    Path(output_file).parent.mkdir(exist_ok=True, parents=True)
     wb.save(output_file)
 
 

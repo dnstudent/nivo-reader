@@ -2,13 +2,15 @@
 import argparse
 import sys
 import warnings
+from itertools import chain
 from pathlib import Path
 
+import easyocr
 import numpy as np
+import polars as pl
 from PIL import Image
 from tqdm import tqdm
-import easyocr
-import polars as pl
+
 from nivo_reader import read_nivo_table
 
 # Suppress pin_memory warnings from PyTorch/EasyOCR
@@ -34,8 +36,37 @@ def load_image(image_path: Path) -> np.ndarray:
         raise ValueError(f"Could not load image {image_path}: {e}")
 
 
+def excel_out(output_dir: Path, image_path: Path, images_dir: Path) -> Path:
+    """Generate output Excel file path for an image.
+
+    Args:
+        output_dir: Output directory for Excel files
+        image_path: Path to the input image
+        images_dir: Base directory containing images
+
+    Returns:
+        Path to the output Excel file
+    """
+    return output_dir / Path(str(image_path.relative_to(images_dir)) + ".xlsx")
+
+
+def compose_debug_dir(debug_dir: Path, image_path: Path, images_dir: Path) -> Path:
+    """Generate debug directory path for an image.
+
+    Args:
+        debug_dir: Base directory for debug artifacts
+        image_path: Path to the input image
+        images_dir: Base directory containing images
+
+    Returns:
+        Path to the debug directory for this image
+    """
+    return debug_dir / image_path.relative_to(images_dir) / ""
+
+
 def process_images(
-    image_paths: list[Path],
+    images_dir: Path,
+    image_formats: list[str],
     output_dir: Path,
     debug_dir: Path,
     clips: tuple[int, int, int, int],
@@ -52,12 +83,13 @@ def process_images(
     """Process multiple NIVO images and write to Excel files.
 
     Args:
-        image_paths: list of image file paths
+        images_dir: Directory containing input images
+        image_formats: List of image file extensions to process (e.g., ['png', 'jpg'])
         output_dir: Directory for output Excel files
         debug_dir: Base directory for debug artifacts
         clips: (up, down, left, right) clipping margins
         table_shape: (width, height) of table
-        anagrafica: list of known station names
+        anagrafica: List of known station names
         station_char_shape: Character dimensions for station names
         number_char_shape: Character dimensions for numbers
         roi_padding: ROI padding in pixels
@@ -77,18 +109,22 @@ def process_images(
     if debug_base:
         debug_base.mkdir(parents=True, exist_ok=True)
 
+    images_dir = Path(images_dir)
+    image_paths = list(
+        chain.from_iterable(
+            map(lambda format: images_dir.glob(f"**/*.{format}"), image_formats)
+        )
+    )
+
     # Filter images to process
-    images_to_process = []
-    for img_path in image_paths:
-        img_path = Path(img_path)
-        excel_out = output_dir / img_path.stem / ".xlsx"
-
-        # Check if already processed
-        if excel_out.exists() and not overwrite:
-            print(f"Skipping {img_path.name} (already processed)")
-            continue
-
-        images_to_process.append(img_path)
+    if not overwrite:
+        images_to_process = [
+            image_path
+            for image_path in image_paths
+            if not excel_out(output_dir, image_path, images_dir).exists()
+        ]
+    else:
+        images_to_process = image_paths
 
     if not images_to_process:
         print("No images to process")
@@ -103,12 +139,12 @@ def process_images(
             image = load_image(img_path)
 
             # Generate output paths
-            excel_out_path = output_dir / f"{img_path.stem}.xlsx"
+            excel_out_path = excel_out(output_dir, img_path, images_dir)
 
             # Generate debug directory if requested
             img_debug_dir = None
             if debug_base:
-                img_debug_dir = debug_base / img_path.stem
+                img_debug_dir = compose_debug_dir(debug_base, img_path, images_dir)
 
             # Process image
             read_nivo_table(
@@ -127,24 +163,23 @@ def process_images(
                 debug_dir=img_debug_dir,
             )
 
-            tqdm.write(f"✓ Processed: {img_path.name}")
+            tqdm.write(f"✓ Processed: {img_path.relative_to(images_dir)}")
 
         except Exception as e:
-            tqdm.write(f"✗ Error processing {img_path.name}: {e}")
+            tqdm.write(f"✗ Error processing {img_path.relative_to(images_dir)}: {e}")
 
 
 def create_argparser():
-    """Parse arguments and execute batch processing."""
+    """Create and configure argument parser for batch processing."""
     parser = argparse.ArgumentParser(
         description="Batch process NIVO table images and extract to Excel"
     )
 
     # Input/Output arguments
     parser.add_argument(
-        "image_files",
-        nargs="+",
-        type=str,
-        help="Input image file paths",
+        "images_dir",
+        type=Path,
+        help="Directory containing input images",
     )
     parser.add_argument(
         "-o",
@@ -236,6 +271,14 @@ def create_argparser():
         help="Overwrite existing output files",
     )
 
+    # Image formats
+    parser.add_argument(
+        "--image-formats",
+        type=str,
+        default="png,jpg,jpeg,gif",
+        help="Comma-separated list of image file formats to process (default: png,jpg,jpeg,gif)",
+    )
+
     return parser
 
 
@@ -262,18 +305,17 @@ def main():
         print("Error: Anagrafica file is empty")
         sys.exit(1)
 
-    # Convert image paths
-    image_paths = [Path(img) for img in args.image_files]
+    # Validate images directory
+    if not args.images_dir.exists():
+        print(f"Error: Images directory not found: {args.images_dir}")
+        sys.exit(1)
 
-    # Validate image paths
-    for img_path in image_paths:
-        if not img_path.exists():
-            print(f"Error: Image file not found: {img_path}")
-            sys.exit(1)
+    image_formats = str(args.image_formats).split(",")
 
     # Process images
     process_images(
-        image_paths,
+        images_dir=args.images_dir,
+        image_formats=image_formats,
         output_dir=args.output_dir,
         debug_dir=args.debug_dir,
         clips=tuple(args.clips),
