@@ -1,16 +1,19 @@
-from typing import Sequence
+"""Parts of the code were inspired by MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
+
 from itertools import pairwise
+from typing import Sequence
+
 import numpy as np
-from cv2.typing import MatLike, Rect
-from numpy.typing import NDArray
 import polars as pl
 import polars_distance as pld
+from cv2.typing import MatLike, Rect
+from numpy.typing import NDArray
 
-from .table_detection import extract, create_word_blobs
 from .image_processing import extract_contours_boxes
 from .original_parameterization.table_and_cell_detection import (
     WordBlobsCreationParameters,
 )
+from .table_detection import create_word_blobs, extract
 
 
 def autocrop(image: MatLike) -> MatLike:

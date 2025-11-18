@@ -1,14 +1,15 @@
-"""ROI (Region of Interest) utilities for NIVO table cell extraction."""
+"""ROI (Region of Interest) utilities for NIVO table cell extraction. Parts of the code were inspired by MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
 
-from typing import Any
-from math import ceil, floor
 from itertools import pairwise
+from math import ceil, floor
+from typing import Any
+
 import numpy as np
 from cv2.typing import MatLike, Rect
 from sklearn.cluster import KMeans
 
-from .table_detection import extract
 from .ocr_processing import autocrop
+from .table_detection import extract
 
 
 def generate_roi(

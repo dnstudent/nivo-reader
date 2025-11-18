@@ -1,21 +1,23 @@
-"""Table and line detection utilities for NIVO tables."""
+"""Table and line detection utilities for NIVO tables.
+Parts of the code are taken from MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors.
+"""
 
 from typing import Literal
+
 import cv2
 import numpy as np
 from cv2.typing import MatLike, Rect
 from scipy.signal import find_peaks
 
-
+from .image_processing import ms_threshold
 from .original_parameterization.preprocessing import (
     ThresholdParameters,
 )
 from .original_parameterization.table_and_cell_detection import (
-    LinesDetectionParameters,
     LinesCombinationParameters,
+    LinesDetectionParameters,
     LinesExtractionParameters,
 )
-from .image_processing import ms_threshold
 
 
 def ok_side(x: int, expected_x: int, tol: float = 0.1) -> bool:

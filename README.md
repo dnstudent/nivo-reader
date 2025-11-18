@@ -48,13 +48,6 @@ Installabili tramite
 python3 -m pip install -r requirements.txt
 ```
 
-- `python-opencv` (OpenCV)
-- `numpy`
-- `easyocr`
-- `PIL` (Pillow)
-- `polars`
-- `openpyxl`
-- `tqdm`
-- `scikit-learn`
-- `scipy`
-- `img2table`
+## Aknowledgements
+
+Parte del codice è preso o ispirato da MeteoSaver: [https://github.com/VUB-HYDR/MeteoSaver](https://github.com/VUB-HYDR/MeteoSaver)

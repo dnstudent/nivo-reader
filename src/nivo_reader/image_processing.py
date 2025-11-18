@@ -1,4 +1,4 @@
-"""Image preprocessing utilities for NIVO table extraction."""
+"""Image preprocessing utilities for NIVO table extraction. Parts of the code are taken from MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
 
 import cv2
 import numpy as np
@@ -7,8 +7,8 @@ from img2table.document.base.rotation import fix_rotation_image
 
 from .original_parameterization.preprocessing import (
     BinarizationParameters,
-    ThresholdParameters,
     PreprocessingParameters,
+    ThresholdParameters,
 )
 
 
