@@ -2,10 +2,11 @@
 
 from typing import Callable
 from pathlib import Path
-from string import ascii_letters
-import numpy as np
-from cv2.typing import MatLike
+
 import easyocr
+import numpy as np
+import paddleocr
+from cv2.typing import MatLike, Rect
 
 from . import ocr_processing
 from .configuration.preprocessing import (
@@ -56,10 +57,12 @@ def read_station_names(
     rows_centers: list[int],
     column_separators: list[int],
     char_shape: tuple[int, int],
-    reader: Callable,
+    reader: Callable[
+        [MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]
+    ],
     roi_padding: int,
     anagrafica: list[str],
-) -> tuple[list[str], list[float], list]:
+) -> tuple[list[str | None], list[float | None], list]:
     """Read station names from first column.
 
     Args:
@@ -77,7 +80,7 @@ def read_station_names(
     first_column = image[:, column_separators[0] : column_separators[1]]
     names_wboxes = list(
         map(
-            lambda box: pad_roi(autocrop_roi(box, image), roi_padding, image.shape),
+            lambda box: pad_roi(autocrop_roi(box, image), roi_padding),
             detect_station_boxes(first_column, char_shape, rows_centers),
         )
     )
@@ -86,28 +89,53 @@ def read_station_names(
     ocr_names, names_confidences, ocr_name_boxes = reader(image, names_wboxes)
 
     names_rows = compute_name_rows(ocr_name_boxes)
-    ocr_names: list[str] = np.array(ocr_names)[names_rows].tolist()
-    names_confidences: list[float] = np.array(names_confidences)[names_rows].tolist()
-    ocr_name_boxes: list = np.array(ocr_name_boxes)[names_rows].tolist()
+    ocr_names: list[str | None] = np.array(ocr_names)[names_rows].tolist()
+    names_confidences: list[float | None] = np.array(names_confidences)[
+        names_rows
+    ].tolist()
+    ocr_name_boxes: list[Rect] = np.array(ocr_name_boxes)[names_rows].tolist()
 
     anagrafica_closest = associate_closest_station_names(ocr_names, anagrafica)
-    anagrafica_names: list[str] = list(map(lambda d: d["name"], anagrafica_closest))
-    analgrafica_similarities: list[float] = list(
+    anagrafica_names: list[str | None] = list(
+        map(lambda d: d["name"], anagrafica_closest)
+    )
+    analgrafica_similarities: list[float | None] = list(
         map(lambda d: d["string_similarity"], anagrafica_closest)
     )
 
     return anagrafica_names, analgrafica_similarities, ocr_name_boxes
 
 
+def prepare_value_roi(
+    roi: Rect,
+    image: MatLike,
+    character_shape: tuple[int, int],
+    parameters: WordBlobsCreationParameters,
+    padding: int,
+):
+    largest_region = resize_roi_to_largest_connected_region(roi, image, parameters)
+    if largest_region is None:
+        largest_region = roi
+    largest_region = autocrop_roi(largest_region, image)
+    largest_region = expand_roi_atleast(largest_region, character_shape)
+
+    return pad_roi(largest_region, padding)
+
+
 def read_values(
     image: MatLike,
     rows_centers: list[int],
     column_separators: list[int],
-    number_char_height: int,
-    reader: Callable,
+    number_char_shape: tuple[int, int],
+    readers: list[
+        Callable[
+            [MatLike, list[Rect]],
+            tuple[list[str | None], list[float | None], list[Rect]],
+        ]
+    ],
     roi_padding: int,
     extra_width: int,
-) -> tuple[list[str], list[float], list]:
+) -> tuple[list[str | None], list[float | None], list[Rect]]:
     """Read values from table cells.
 
     Args:
@@ -123,24 +151,37 @@ def read_values(
         tuple of (values, confidences, boxes)
     """
     rois = generate_roi_grid(
-        rows_centers, column_separators[1:], number_char_height, extra_width
+        rows_centers, column_separators[1:], number_char_shape[1], extra_width
     )
     rois = list(
         map(
-            lambda roi: pad_roi(autocrop_roi(roi, image), roi_padding, image.shape),
+            lambda roi: prepare_value_roi(
+                roi,
+                image,
+                number_char_shape,
+                WordBlobsCreationParameters(gap_iterations=2, simple_iterations=0),
+                roi_padding,
+            ),
             [roi for crois in rois for roi in crois],
         )
     )
-    return reader(image, rois)
+    results = ([], [], [])
+    for reader in readers:
+        rresults = reader(image, rois)
+        results[0].extend(rresults[0])
+        results[1].extend(rresults[1])
+        results[2].extend(rresults[2])
+    return results
 
 
 def read_nivo_table(
     original_image: MatLike,
     excel_out_path,
-    ocr: easyocr.Reader,
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
     anagrafica: list[str],
+    easyreader: easyocr.Reader,
+    paddletextrecog: paddleocr.TextRecognition,
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,
@@ -224,38 +265,13 @@ def read_nivo_table(
             debug_dir,
         )
 
-    # Define OCR reader for station names
-    def names_reader(image: MatLike, rois: list) -> tuple[list[str], list[float], list]:
-        recognition_results = transpose_recognition_results(
-            [
-                process_easyocr_readtext_result(
-                    ocr.readtext(  # type: ignore
-                        extract(image, roi),
-                        allowlist=f"{ascii_letters}()' /áàóòúùèéìi",
-                        paragraph=False,
-                        output_format="dict",
-                    )
-                )
-                for roi in rois
-            ]
-        )
-        recognition_results["boxes"] = [
-            [box[0] + roi[0], box[1] + roi[1], box[2], box[3]]
-            for box, roi in zip(recognition_results["boxes"], rois)
-        ]
-        return (
-            recognition_results["text"],
-            recognition_results["confident"],
-            recognition_results["boxes"],
-        )
-
     # Read station names
     ocr_names, names_anagrafica_similarities, ocr_name_boxes = read_station_names(
         binarized_subtable_wo_lines,
         rows_centers,
         cols_separators,
         station_char_shape,
-        names_reader,
+        easyocr_names_reader(easyreader),
         roi_padding,
         anagrafica,
     )
@@ -270,54 +286,38 @@ def read_nivo_table(
             debug_dir,
         )
 
-    # Define OCR reader for values
-    def values_reader(
-        image: MatLike, rois: list
-    ) -> tuple[list[str], list[float], list]:
-        easyrois = list(map(rect2easy, rois))
-        recognition_results = transpose_recognition_results(
-            process_easyocr_recognize_result(
-                ocr.recognize(  # type: ignore
-                    image,
-                    horizontal_list=easyrois,
-                    free_list=[],
-                    allowlist="_━―─⎯-0123456789",
-                    output_format="dict",
-                    batch_size=128,
-                )
-            )
-        )
-        return (
-            recognition_results["text"],
-            recognition_results["confident"],
-            recognition_results["boxes"],
-        )
-
     # Read values
     ocr_values, values_confidences, ocr_value_boxes = read_values(
         binarized_subtable_wo_lines,
         rows_centers,
         cols_separators,
-        number_char_shape[1],
-        values_reader,
+        number_char_shape,
+        [value_readers["easyocr"](easyreader)],
         roi_padding,
         extra_width,
-    )
-
-    # Assign grid coordinates
-    values_coordinates = roi_grid_coordinates(
-        ocr_value_boxes, n_rows=len(rows_centers), n_cols=len(cols_separators) - 2
     )
 
     if debug_dir:
         save_artifacts(
             {
-                "06_values_bboxes": draw_bounding_boxes(
-                    binarized_subtable_wo_lines, ocr_value_boxes, boxes=True
+                "06_values_bboxes": draw_straight_lines(
+                    draw_bounding_boxes(
+                        binarized_subtable_wo_lines,
+                        ocr_value_boxes,
+                        boxes=True,
+                        thickness=1,
+                    ),
+                    rows_centers,
+                    "horizontal",
                 )
             },
             debug_dir,
         )
+
+    # Assign grid coordinates
+    values_coordinates = roi_grid_coordinates(
+        ocr_value_boxes, n_rows=len(rows_centers), n_cols=len(cols_separators) - 2
+    )
 
     # Write to Excel
     write_tables_to_excel(

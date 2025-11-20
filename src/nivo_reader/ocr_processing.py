@@ -1,11 +1,16 @@
 """Parts of the code were inspired by MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
 
-from itertools import pairwise
+from itertools import pairwise, takewhile
+from string import ascii_letters
 from typing import Sequence
 
+import cv2
+import easyocr
 import numpy as np
+import paddleocr
 import polars as pl
-import polars_distance as pld
+import polars_distance as pld  # noqa: F401
+import pytesseract
 from cv2.typing import MatLike, Rect
 from numpy.typing import NDArray
 
@@ -55,42 +60,68 @@ def merge_boxes(boxes: list[Rect]) -> Rect | None:
     return [bounds[0], bounds[1], bounds[2] - bounds[0], bounds[3] - bounds[1]]
 
 
-def merge_and_filter_boxes(
-    input_boxes: Sequence[Rect], rows_positions: Sequence[int], char_height: int
+def sorted_boxes_are_within_line(boxes: tuple[Rect, Rect], row_height: int) -> bool:
+    """boxes[0] is supposed to be above boxes[1]"""
+    _, y1, _, h1 = boxes[0]
+    y2 = boxes[1][1]
+    return 0 <= y2 - (y1 + h1) <= row_height
+
+
+def merge_and_filter_station_name_boxes(
+    input_boxes: list[Rect], rows_positions: list[int], char_height: int
 ) -> list[Rect]:
-    """Merge and filter boxes aligned with rows.
+    """Merge boxes that are part of the same station name.
+    Parts of a station name are generally within one table row of each other. Only the last box of a station name is aligned with the data row, though.
 
     Args:
-        input_boxes: list of rectangles
-        rows_positions: Row center y-coordinates
-        char_height: Character height
+        input_boxes: list of station name and basin boxes. Each box lies within a single row of the table.
+        rows_positions: Row center y-coordinates.
+        char_height: Character height.
 
     Returns:
         Merged and filtered boxes
     """
     input_boxes = sorted(input_boxes, key=lambda b: b[1])
+    input_boxes_centers = np.array([int(y + h / 2) for _, y, _, h in input_boxes])
     rows_positions = sorted(rows_positions)
-    rows_heights = [rows_positions[0]] + list(
-        map(lambda p: p[1] - p[0], pairwise(rows_positions))
-    )
-    row_height = min(min(rows_heights), 3 * char_height)
+
+    rows_heights = list(map(lambda p: p[1] - p[0], pairwise(rows_positions)))
+    if not rows_heights:
+        rows_heights = [char_height]
+    # TODO: the 3 * char_height is a guess, we should find a better way to estimate the row height
+    row_height = min(min(rows_heights), int(3 * char_height))
+
     output_boxes: list[Rect] = []
+
+    last_matched_box_i = -1
     for row_position in rows_positions:
-        matching_boxes = list(
-            filter(
-                lambda box: box[1][1]
-                <= row_position - row_height
-                <= box[1][1] + box[1][3]
-                or box[1][1] <= row_position <= box[1][1] + box[1][3],
-                enumerate(input_boxes),
+        matching_name_box_i = (
+            int(
+                np.argmin(
+                    np.abs(input_boxes_centers[last_matched_box_i + 1 :] - row_position)
+                )
+            )
+            + last_matched_box_i
+            + 1
+        )
+        to_merge_name_box_is = list(
+            takewhile(
+                lambda i: sorted_boxes_are_within_line(
+                    (input_boxes[i], input_boxes[i + 1]), row_height
+                ),
+                range(matching_name_box_i - 1, last_matched_box_i, -1),
             )
         )
-        indices = [i for i, _ in matching_boxes]
-        matching_boxes = [b for _, b in matching_boxes]
-        matching_box = merge_boxes(matching_boxes)
-        if matching_box:
-            output_boxes.append(matching_box)
-        input_boxes = input_boxes[max(indices) + 1 :]
+
+        if to_merge_name_box_is:
+            merged_box = merge_boxes(
+                input_boxes[to_merge_name_box_is[-1] : matching_name_box_i]
+            )
+        else:
+            merged_box = input_boxes[matching_name_box_i]
+        last_matched_box_i = matching_name_box_i
+        output_boxes.append(merged_box)  # type: ignore : it is always not None
+
     return output_boxes
 
 
@@ -114,14 +145,14 @@ def detect_station_boxes(
     word_boxes = list(extract_contours_boxes(word_blobs))
     word_boxes.sort(key=lambda r: r[1])
     filtered_wboxes = filter_by_size(word_boxes, char_shape)
-    filtered_wboxes = merge_and_filter_boxes(
+    filtered_wboxes = merge_and_filter_station_name_boxes(
         filtered_wboxes, rows_centers, char_shape[1]
     )
     return filtered_wboxes
 
 
 def associate_closest_station_names(
-    results: Sequence[str], anagrafica: Sequence[str]
+    results: Sequence[str | None], anagrafica: Sequence[str]
 ) -> list[dict]:
     """Match OCR results to known station names using Levenshtein distance.
 
@@ -160,11 +191,15 @@ def associate_closest_station_names(
         .sort("index", "distance")
         .group_by("index", maintain_order=True)
         .head(1)
-        .sort("index")
         .with_columns(similarity=-pl.col("distance"))
     )
     return (
         results_df.sort("index")
+        .with_columns(
+            name_anagrafica=pl.when(pl.col("ocr_name").is_null())
+            .then("ocr_name")
+            .otherwise("name_anagrafica")
+        )
         .select(name="name_anagrafica", string_similarity="similarity")
         .to_dicts()
     )
@@ -225,9 +260,13 @@ def process_easyocr_readtext_result(cell_results: list[dict]) -> dict:
     return {
         "boxes": easyrect2rect(
             merge_easypolys([result["boxes"] for result in cell_results])
-        ),
-        "text": " ".join([r["text"] for r in cell_results]),
-        "confident": float(np.mean([r["confident"] for r in cell_results])),
+        )
+        if cell_results
+        else None,
+        "text": " ".join([r["text"] for r in cell_results]) if cell_results else None,
+        "confident": float(np.mean([r["confident"] for r in cell_results]))
+        if cell_results
+        else None,
     }
 
 
@@ -241,3 +280,134 @@ def process_easyocr_recognize_result(box_results: list[dict]) -> list[dict]:
         Processed results
     """
     return [process_easyocr_readtext_result([box_result]) for box_result in box_results]
+
+
+def easyocr_names_reader(ocr: easyocr.Reader):
+    def _reader(
+        image: MatLike, rois: list[Rect]
+    ) -> tuple[list[str | None], list[float | None], list[Rect]]:
+        recognition_results = transpose_recognition_results(
+            [
+                process_easyocr_readtext_result(
+                    ocr.readtext(  # type: ignore
+                        extract(image, roi),
+                        allowlist=f"{ascii_letters}()' /áàóòúùèéìi",
+                        paragraph=False,
+                        output_format="dict",
+                    )
+                )
+                for roi in rois
+            ]
+        )
+        recognition_results["boxes"] = [
+            [box[0] + roi[0], box[1] + roi[1], box[2], box[3]] if box else roi
+            for box, roi in zip(recognition_results["boxes"], rois)
+        ]
+        return (
+            recognition_results["text"],
+            recognition_results["confident"],
+            recognition_results["boxes"],
+        )
+
+    return _reader
+
+
+def easyocr_values_reader(ocr: easyocr.Reader):
+    def _reader(
+        image: MatLike, rois: list[Rect]
+    ) -> tuple[list[str | None], list[float | None], list[Rect]]:
+        easyrois = list(map(rect2easy, rois))
+        recognition_results = transpose_recognition_results(
+            process_easyocr_recognize_result(
+                ocr.recognize(  # type: ignore
+                    image,
+                    horizontal_list=easyrois,
+                    free_list=[],
+                    allowlist="_-0123456789",
+                    output_format="dict",
+                    batch_size=128,
+                    sort_output=False,
+                )
+            )
+        )
+        return (
+            recognition_results["text"],
+            recognition_results["confident"],
+            recognition_results["boxes"],
+        )
+
+    return _reader
+
+
+def paddleocr_values_reader(ocr: paddleocr.TextRecognition):
+    def _reader(
+        image: MatLike, rois: list[Rect]
+    ) -> tuple[list[str | None], list[float | None], list[Rect]]:
+        if image.ndim == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        crops = list(
+            map(
+                lambda roi: extract(
+                    image,
+                    roi,
+                ),
+                rois,
+            )
+        )
+        raw_results: list[dict] = ocr.predict(input=crops, batch_size=8)
+        return (
+            [r.get("rec_text") for r in raw_results],
+            [r.get("rec_score") for r in raw_results],
+            rois,
+        )
+
+    return _reader
+
+
+def process_tesseract_cell_result(result: dict, roi: Rect):
+    text = " ".join(result["text"]).strip() if result["text"] else None
+    if result["conf"]:
+        confident = np.array(result["conf"])
+        if (confident >= 0).any():
+            confident = float(confident[confident >= 0].mean()) / 100
+        else:
+            confident = 0.0
+    else:
+        confident = None
+
+    if len(result["left"]) > 0:
+        i = min(len(result["left"]), 2) - 1
+        boxes = [
+            roi[0] + result["left"][i],
+            roi[1] + result["top"][i],
+            result["width"][i],
+            result["height"][i],
+        ]
+    else:
+        boxes = None
+    return {"boxes": boxes, "confident": confident, "text": text}
+
+
+def tesseract_values_reader(_: None):
+    def _reader(image: MatLike, rois: list[Rect]):
+        crops = list(map(lambda roi: extract(image, roi), rois))
+        recognition_results = [[], [], []]
+        for crop, roi in zip(crops, rois):
+            processed_result = process_tesseract_cell_result(
+                pytesseract.image_to_data(
+                    crop,
+                    config="--psm 8 -c tessedit_char_whitelist=0123456789-_ --oem 1",
+                    output_type="dict",
+                ),
+                roi,
+            )
+            recognition_results[0].append(processed_result["text"])
+            recognition_results[1].append(processed_result["confident"])
+            if processed_result["boxes"]:
+                recognition_results[2].append(processed_result["boxes"])
+            else:
+                recognition_results[2].append(roi)
+
+        return recognition_results
+
+    return _reader

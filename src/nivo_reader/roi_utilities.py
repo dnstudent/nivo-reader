@@ -7,7 +7,6 @@ from typing import Any
 import cv2
 import numpy as np
 from cv2.typing import MatLike, Rect
-from numba import njit
 from numpy.typing import NDArray
 from sklearn.cluster import KMeans
 
@@ -40,7 +39,6 @@ def generate_roi(
         column_width,
         row_height,
     ]
-
 
 def generate_roi_grid(
     row_positions: list[int],
@@ -93,7 +91,7 @@ def roi_grid_coordinates(
 
     # Cluster by Y-coordinate to find rows
     y_coords = centers[:, 1].reshape(-1, 1)
-    kmeans_rows = KMeans(n_clusters=n_rows, n_init=10, random_state=42)
+    kmeans_rows = KMeans(n_clusters=n_rows, n_init=10)  # type: ignore
     row_labels = kmeans_rows.fit_predict(y_coords)
 
     # Sort row clusters by their center Y-coordinate
@@ -106,7 +104,7 @@ def roi_grid_coordinates(
 
     # Cluster by X-coordinate to find columns
     x_coords = centers[:, 0].reshape(-1, 1)
-    kmeans_cols = KMeans(n_clusters=n_cols, n_init=10, random_state=42)
+    kmeans_cols = KMeans(n_clusters=n_cols, n_init=10)  # type: ignore
     col_labels = kmeans_cols.fit_predict(x_coords)
 
     # Sort column clusters by their center X-coordinate
@@ -119,7 +117,6 @@ def roi_grid_coordinates(
 
     # Combine results
     return [(int(row_labels[i]), int(col_labels[i])) for i in range(len(rois))]
-
 
 def is_rect_contained(inner: Rect, outer: Rect) -> bool:
     """Check if inner rectangle is contained in outer rectangle.
@@ -143,7 +140,6 @@ def is_rect_contained(inner: Rect, outer: Rect) -> bool:
         and inner_x2 <= outer_x2
         and inner_y2 <= outer_y2
     )
-
 
 def label_contained_roi(
     container_rois: list[Rect], labels: list[Any], child_roi: Rect
@@ -203,7 +199,6 @@ def autocrop_roi(roi: Rect, image: MatLike) -> Rect:
     y_from, y_to = autocrop_axis(is_fg, axis=1)
     return [roi[0] + x_from, roi[1] + y_from, x_to - x_from, y_to - y_from]
 
-
 def pad_roi(roi: Rect, padding: int | tuple[int, int]) -> Rect:
     """Add padding to region of interest.
 
@@ -230,7 +225,6 @@ def pad_roi(roi: Rect, padding: int | tuple[int, int]) -> Rect:
         h + 2 * pad_y,
     ]
 
-
 def rect2easy(rect: Rect) -> list[int]:
     """Convert OpenCV rect to easyocr format [x1, x2, y1, y2].
 
@@ -242,7 +236,6 @@ def rect2easy(rect: Rect) -> list[int]:
     """
     x, y, w, h = rect
     return [x, x + w, y, y + h]
-
 
 def easyrect2rect(eo_rect: list[int]) -> Rect:
     """Convert easyocr format to OpenCV rect.
@@ -311,14 +304,12 @@ def resize_roi_to_largest_connected_region(
 
     return [int(x_abs), int(y_abs), int(w_rel), int(h_rel)]
 
-
 def expand_roi_atleast(roi: Rect, atleast: tuple[int, int]):
     _, _, w, h = roi
     exp_w, exp_h = atleast
     pad_x = int(ceil(max((exp_w - w) / 2, 0)))
     pad_y = int(ceil(max((exp_h - h) / 2, 0)))
     return pad_roi(roi, (pad_x, pad_y))
-
 
 def extract(image: MatLike, rect: Rect) -> MatLike:
     """Extract rectangular region from image.

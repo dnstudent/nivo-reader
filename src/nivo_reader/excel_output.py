@@ -12,11 +12,11 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 def write_tables_to_excel(
     cell_contents: list[Any],
-    confidence_values: list[float],
+    confidence_values: list[float | None],
     coordinates: list[tuple[int, int]],
     output_file: str,
-    row_headers: list[str],
-    row_headers_similarities: list[float],
+    row_headers: list[str | None],
+    row_headers_similarities: list[float | None],
     low_confidence_threshold: float = 0.7,
 ) -> None:
     """Write cell contents and confidence values to Excel file.
@@ -68,7 +68,7 @@ def write_tables_to_excel(
         ):
             excel_row = row_idx + 1
 
-            is_low_similarity = similarity < -2
+            is_low_similarity = similarity < -2 if similarity else True
 
             # Write to first column
             header_cell = sheet_contents.cell(row=excel_row, column=1)
@@ -94,7 +94,9 @@ def write_tables_to_excel(
         excel_col = col + 2
 
         # Check if confidence is below threshold
-        is_low_confidence = confidence < low_confidence_threshold
+        is_low_confidence = (
+            confidence < low_confidence_threshold if confidence else True
+        )
 
         # Write content
         cell = sheet_contents.cell(row=excel_row, column=excel_col)

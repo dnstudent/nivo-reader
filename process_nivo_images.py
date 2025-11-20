@@ -4,9 +4,12 @@ import sys
 import warnings
 from itertools import chain
 from pathlib import Path
+from typing import Literal
+import logging
 
 import easyocr
 import numpy as np
+import paddleocr
 import polars as pl
 from PIL import Image
 from tqdm import tqdm
@@ -72,6 +75,7 @@ def process_images(
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
     anagrafica: list[str],
+    reader: Literal["easyocr", "tesseract"],
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,
@@ -100,7 +104,6 @@ def process_images(
     """
     # Initialize OCR reader once
     print("Initializing OCR reader...")
-    ocr = easyocr.Reader(lang_list=["it"])
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -132,6 +135,9 @@ def process_images(
 
     print(f"Processing {len(images_to_process)} images...")
 
+    easyreader = easyocr.Reader(lang_list=["it"])
+    paddletextrecog = paddleocr.TextRecognition(model_name="latin_PP-OCRv5_mobile_rec")
+
     # Process images with progress bar
     for img_path in tqdm(images_to_process, desc="Processing images"):
         try:
@@ -150,22 +156,24 @@ def process_images(
             read_nivo_table(
                 image,
                 excel_out_path,
-                ocr,
-                clips=clips,
-                table_shape=table_shape,
-                anagrafica=anagrafica,
-                station_char_shape=station_char_shape,
-                number_char_shape=number_char_shape,
-                roi_padding=roi_padding,
-                nchars_threshold=nchars_threshold,
-                extra_width=extra_width,
-                low_confidence_threshold=low_confidence_threshold,
-                debug_dir=img_debug_dir,
+                clips,
+                table_shape,
+                anagrafica,
+                easyreader,
+                paddletextrecog,
+                station_char_shape,
+                number_char_shape,
+                roi_padding,
+                nchars_threshold,
+                extra_width,
+                low_confidence_threshold,
+                img_debug_dir,
             )
 
             tqdm.write(f"✓ Processed: {img_path.relative_to(images_dir)}")
 
         except Exception as e:
+            logging.exception(f"Error processing {img_path.relative_to(images_dir)}: {e}")
             tqdm.write(f"✗ Error processing {img_path.relative_to(images_dir)}: {e}")
 
 
@@ -271,6 +279,14 @@ def create_argparser():
         help="Overwrite existing output files",
     )
 
+    parser.add_argument(
+        "--ocr",
+        choices=["easyocr", "tesseract"],
+        type=str,
+        default="easyocr",
+        help="Which OCR to use to read table values",
+    )
+
     # Image formats
     parser.add_argument(
         "--image-formats",
@@ -285,6 +301,11 @@ def create_argparser():
 def main():
     parser = create_argparser()
     args = parser.parse_args()
+
+    if args.debug_dir:
+        logging.basicConfig(level=logging.DEBUG, filename=Path(args.debug_dir) / "process_nivo_images.log", filemode="w")
+    else:
+        logging.basicConfig(level=logging.CRITICAL)
 
     # Load station names
     anagrafica_path = Path(args.anagrafica_file)
@@ -321,6 +342,7 @@ def main():
         clips=tuple(args.clips),
         table_shape=tuple(args.table_shape),
         anagrafica=anagrafica,
+        reader=args.ocr,
         station_char_shape=tuple(args.station_char_shape),
         number_char_shape=tuple(args.number_char_shape),
         roi_padding=args.roi_padding,
