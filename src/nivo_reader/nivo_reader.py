@@ -7,41 +7,48 @@ import numpy as np
 from cv2.typing import MatLike
 import easyocr
 
-from .original_parameterization.preprocessing import (
+from . import ocr_processing
+from .configuration.preprocessing import (
     PreprocessingParameters,
     ThresholdParameters,
 )
-from .original_parameterization.table_and_cell_detection import (
+from .configuration.table_and_cell_detection import (
     LinesExtractionParameters,
+    WordBlobsCreationParameters,
 )
-
-from .image_processing import preproc
-from .table_detection import (
-    try_detect_table_rect,
-    cut_out_tables,
-    remove_lines_from_image,
-    detect_rows_positions,
-    detect_column_separators,
-)
-from .ocr_processing import (
-    detect_station_boxes,
-    associate_closest_station_names,
-    compute_name_rows,
-    transpose_recognition_results,
-    process_easyocr_readtext_result,
-    process_easyocr_recognize_result,
-    rect2easy,
-    autocrop_roi,
-    pad_roi,
-)
-from .roi_utilities import generate_roi_grid, roi_grid_coordinates
 from .excel_output import (
-    write_tables_to_excel,
-    save_artifacts,
     draw_bounding_boxes,
     draw_straight_lines,
+    save_artifacts,
+    write_tables_to_excel,
 )
-from .table_detection import extract
+from .image_processing import preproc
+from .ocr_processing import (
+    associate_closest_station_names,
+    compute_name_rows,
+    detect_station_boxes,
+    easyocr_names_reader,
+)
+from .roi_utilities import (
+    autocrop_roi,
+    expand_roi_atleast,
+    generate_roi_grid,
+    pad_roi,
+    resize_roi_to_largest_connected_region,
+    roi_grid_coordinates,
+)
+from .table_detection import (
+    cut_out_tables,
+    detect_column_separators,
+    detect_rows_positions,
+    remove_lines_from_image,
+    try_detect_table_rect,
+)
+
+value_readers = {
+    reader: getattr(ocr_processing, f"{reader}_values_reader")
+    for reader in ["tesseract", "easyocr", "paddleocr"]
+}
 
 
 def read_station_names(

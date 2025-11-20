@@ -4,12 +4,15 @@ from itertools import pairwise
 from math import ceil, floor
 from typing import Any
 
+import cv2
 import numpy as np
 from cv2.typing import MatLike, Rect
+from numba import njit
+from numpy.typing import NDArray
 from sklearn.cluster import KMeans
 
-from .ocr_processing import autocrop
-from .table_detection import extract
+from .configuration.table_and_cell_detection import WordBlobsCreationParameters
+from .table_detection import create_word_blobs
 
 
 def generate_roi(
@@ -160,18 +163,176 @@ def label_contained_roi(
             return label
 
 
-def read_roi(roi: Rect, image: MatLike, readers: list) -> list[str]:
-    """Read text from ROI using multiple readers.
+def autocrop(image: MatLike) -> MatLike:
+    """Remove padding from image.
 
     Args:
-        roi: Region of interest
-        image: Image to read from
-        readers: list of reader callables
+        image: Input image
 
     Returns:
-        list of recognized texts
+        Cropped image
     """
-    cell_content = np.pad(
-        autocrop(extract(image, roi)), pad_width=3, mode="constant", constant_values=0
+    is_fg = image > 0
+    cols_with_content = np.argwhere(is_fg.any(axis=0)).flatten()
+    x_from, x_to = cols_with_content.min(), cols_with_content.max()
+    rows_with_content = np.argwhere(is_fg.any(axis=1)).flatten()
+    y_from, y_to = rows_with_content.min(), rows_with_content.max()
+    return image[y_from : y_to + 1, x_from : x_to + 1]
+
+
+def autocrop_axis(a: NDArray, axis: int):
+    a_with_content = np.argwhere(a.any(axis)).flatten()
+    if len(a_with_content) > 0:
+        return int(a_with_content.min()), int(a_with_content.max())
+    return 0, len(a_with_content)
+
+
+def autocrop_roi(roi: Rect, image: MatLike) -> Rect:
+    """Autocrop a region of interest within an image.
+
+    Args:
+        roi: Region of interest (x, y, width, height)
+        image: Full image
+
+    Returns:
+        Cropped ROI coordinates
+    """
+    image = extract(image, roi)
+    is_fg = image > 0
+    x_from, x_to = autocrop_axis(is_fg, axis=0)
+    y_from, y_to = autocrop_axis(is_fg, axis=1)
+    return [roi[0] + x_from, roi[1] + y_from, x_to - x_from, y_to - y_from]
+
+
+def pad_roi(roi: Rect, padding: int | tuple[int, int]) -> Rect:
+    """Add padding to region of interest.
+
+    Args:
+        roi: Region (x, y, width, height)
+        padding: Padding size in pixels
+        roi_area: (height, width) of full image
+
+    Returns:
+        Padded ROI
+    """
+    if isinstance(padding, int):
+        pad_x, pad_y = padding, padding
+    else:
+        pad_x, pad_y = padding
+    x, y, w, h = roi
+
+    padded_x1 = max(x - pad_x, 0)
+    padded_y1 = max(y - pad_y, 0)
+    return [
+        padded_x1,
+        padded_y1,
+        w + 2 * pad_x,
+        h + 2 * pad_y,
+    ]
+
+
+def rect2easy(rect: Rect) -> list[int]:
+    """Convert OpenCV rect to easyocr format [x1, x2, y1, y2].
+
+    Args:
+        rect: OpenCV rectangle (x, y, w, h)
+
+    Returns:
+        Easyocr rectangle format
+    """
+    x, y, w, h = rect
+    return [x, x + w, y, y + h]
+
+
+def easyrect2rect(eo_rect: list[int]) -> Rect:
+    """Convert easyocr format to OpenCV rect.
+
+    Args:
+        eo_rect: Easyocr rectangle [x1, x2, y1, y2]
+
+    Returns:
+        OpenCV rectangle (x, y, w, h)
+    """
+    x1, x2, y1, y2 = eo_rect
+    return [x1, y1, x2 - x1, y2 - y1]
+
+
+def resize_roi_to_largest_connected_region(
+    roi: Rect,
+    binarized_image: MatLike,
+    word_blobs_parameters: WordBlobsCreationParameters,
+) -> Rect | None:
+    """Resize ROI to the largest connected region of foreground pixels.
+
+    This function takes a ROI and a binarized image (white foreground, black background),
+    applies the word blobs technique to connect nearby foreground regions, finds the
+    largest connected component within the ROI, and returns a new ROI that tightly
+    bounds that component.
+
+    Args:
+        roi: Region of interest (x, y, width, height)
+        binarized_image: Binary image with white (255) foreground and black (0) background
+        word_blobs_parameters: Parameters for word blob creation
+
+    Returns:
+        New ROI bounding the largest connected region, or None if no foreground found
+    """
+    # Extract the ROI region from the image
+    roi_image = extract(binarized_image, roi)
+
+    if roi_image.shape[0] == 0 or roi_image.shape[1] == 0:
+        return roi
+
+    # Apply word blobs technique to connect nearby foreground regions
+    roi_with_blobs = create_word_blobs(roi_image, word_blobs_parameters)
+
+    # Find connected components
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        roi_with_blobs, connectivity=8
     )
-    return [reader(cell_content) for reader in readers]
+
+    # If no components found (only background), return None
+    if num_labels <= 1:
+        return None
+
+    # Find the largest component (excluding background which is label 0)
+    # stats columns: [x, y, width, height, area]
+    largest_component_idx = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+
+    # Get bounding box of largest component (relative to ROI)
+    x_rel = stats[largest_component_idx, cv2.CC_STAT_LEFT]
+    y_rel = stats[largest_component_idx, cv2.CC_STAT_TOP]
+    w_rel = stats[largest_component_idx, cv2.CC_STAT_WIDTH]
+    h_rel = stats[largest_component_idx, cv2.CC_STAT_HEIGHT]
+
+    # Convert to absolute coordinates
+    x_abs = roi[0] + x_rel
+    y_abs = roi[1] + y_rel
+
+    return [int(x_abs), int(y_abs), int(w_rel), int(h_rel)]
+
+
+def expand_roi_atleast(roi: Rect, atleast: tuple[int, int]):
+    _, _, w, h = roi
+    exp_w, exp_h = atleast
+    pad_x = int(ceil(max((exp_w - w) / 2, 0)))
+    pad_y = int(ceil(max((exp_h - h) / 2, 0)))
+    return pad_roi(roi, (pad_x, pad_y))
+
+
+def extract(image: MatLike, rect: Rect) -> MatLike:
+    """Extract rectangular region from image.
+
+    Args:
+        image: Input image
+        rect: Rectangle (x, y, width, height)
+
+    Returns:
+        Extracted region
+    """
+    x, y, w, h = rect
+    return image[
+        max(y, 0) : min(y + h, image.shape[0]),
+        max(x, 0) : min(x + w, image.shape[1]),
+    ]
+    # return image[y : y + h, x : x + w]

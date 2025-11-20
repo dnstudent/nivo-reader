@@ -9,71 +9,12 @@ import polars_distance as pld
 from cv2.typing import MatLike, Rect
 from numpy.typing import NDArray
 
-from .image_processing import extract_contours_boxes
-from .original_parameterization.table_and_cell_detection import (
+from .configuration.table_and_cell_detection import (
     WordBlobsCreationParameters,
 )
-from .table_detection import create_word_blobs, extract
-
-
-def autocrop(image: MatLike) -> MatLike:
-    """Remove padding from image.
-
-    Args:
-        image: Input image
-
-    Returns:
-        Cropped image
-    """
-    is_fg = image > 0
-    cols_with_content = np.argwhere(is_fg.any(axis=0)).flatten()
-    x_from, x_to = cols_with_content.min(), cols_with_content.max()
-    rows_with_content = np.argwhere(is_fg.any(axis=1)).flatten()
-    y_from, y_to = rows_with_content.min(), rows_with_content.max()
-    return image[y_from : y_to + 1, x_from : x_to + 1]
-
-
-def autocrop_roi(roi: Rect, image: MatLike) -> Rect:
-    """Autocrop a region of interest within an image.
-
-    Args:
-        roi: Region of interest (x, y, width, height)
-        image: Full image
-
-    Returns:
-        Cropped ROI coordinates
-    """
-    image = extract(image, roi)
-    is_fg = image > 0
-    cols_with_content = np.argwhere(is_fg.any(axis=0)).flatten()
-    x_from, x_to = int(cols_with_content.min()), int(cols_with_content.max())
-    rows_with_content = np.argwhere(is_fg.any(axis=1)).flatten()
-    y_from, y_to = int(rows_with_content.min()), int(rows_with_content.max())
-    return [roi[0] + x_from, roi[1] + y_from, x_to - x_from, y_to - y_from]
-
-
-def pad_roi(roi: Rect, padding: int, roi_area: tuple[int, int]) -> Rect:
-    """Add padding to region of interest.
-
-    Args:
-        roi: Region (x, y, width, height)
-        padding: Padding size in pixels
-        roi_area: (height, width) of full image
-
-    Returns:
-        Padded ROI
-    """
-    x, y, w, h = roi
-    padded_x1 = max(x - padding, 0)
-    padded_y1 = max(y - padding, 0)
-    padded_x2 = max(min(padded_x1 + w + 2 * padding, roi_area[1] - 1), 0)
-    padded_y2 = max(min(padded_y1 + h + 2 * padding, roi_area[0] - 1), 0)
-    return [
-        padded_x1,
-        padded_y1,
-        padded_x2 - padded_x1,
-        padded_y2 - padded_y1,
-    ]
+from .image_processing import extract_contours_boxes
+from .roi_utilities import easyrect2rect, extract, rect2easy
+from .table_detection import create_word_blobs
 
 
 def filter_by_size(
@@ -240,32 +181,6 @@ def compute_name_rows(boxes: list[Rect]) -> list[int]:
     """
     ys = [b[1] for b in boxes]
     return np.argsort(ys).tolist()
-
-
-def rect2easy(rect: Rect) -> list[int]:
-    """Convert OpenCV rect to easyocr format [x1, x2, y1, y2].
-
-    Args:
-        rect: OpenCV rectangle (x, y, w, h)
-
-    Returns:
-        Easyocr rectangle format
-    """
-    x, y, w, h = rect
-    return [x, x + w, y, y + h]
-
-
-def easyrect2rect(eo_rect: list[int]) -> Rect:
-    """Convert easyocr format to OpenCV rect.
-
-    Args:
-        eo_rect: Easyocr rectangle [x1, x2, y1, y2]
-
-    Returns:
-        OpenCV rectangle (x, y, w, h)
-    """
-    x1, x2, y1, y2 = eo_rect
-    return [x1, y1, x2 - x1, y2 - y1]
 
 
 def transpose_recognition_results(recognition: list) -> dict:

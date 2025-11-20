@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 
 import cv2
-from fancy_dataclass import TOMLDataclass, JSONDataclass
+from fancy_dataclass import JSONDataclass, TOMLDataclass
 
 
 @dataclass

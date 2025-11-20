@@ -5,7 +5,7 @@ import numpy as np
 from cv2.typing import MatLike
 from img2table.document.base.rotation import fix_rotation_image
 
-from .original_parameterization.preprocessing import (
+from .configuration.preprocessing import (
     BinarizationParameters,
     PreprocessingParameters,
     ThresholdParameters,

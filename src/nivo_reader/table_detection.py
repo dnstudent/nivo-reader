@@ -9,15 +9,15 @@ import numpy as np
 from cv2.typing import MatLike, Rect
 from scipy.signal import find_peaks
 
-from .image_processing import ms_threshold
-from .original_parameterization.preprocessing import (
+from .configuration.preprocessing import (
     ThresholdParameters,
 )
-from .original_parameterization.table_and_cell_detection import (
+from .configuration.table_and_cell_detection import (
     LinesCombinationParameters,
     LinesDetectionParameters,
     LinesExtractionParameters,
 )
+from .image_processing import ms_threshold
 
 
 def ok_side(x: int, expected_x: int, tol: float = 0.1) -> bool:
@@ -89,20 +89,6 @@ def cut_out_tables(
     return image[y : y + h, x : x + w], image[
         y + clip_up : y + h - clip_down, x + clip_left : x + w - clip_right
     ]
-
-
-def extract(image: MatLike, rect: Rect) -> MatLike:
-    """Extract rectangular region from image.
-
-    Args:
-        image: Input image
-        rect: Rectangle (x, y, width, height)
-
-    Returns:
-        Extracted region
-    """
-    x, y, w, h = rect
-    return image[y : y + h, x : x + w]
 
 
 def detect_lines(

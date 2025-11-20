@@ -41,7 +41,7 @@ La libreria è organizzata in moduli specializzati per diversi aspetti del proce
   - Lettura valori tabella
 
 - **`config_imports.py`**: Importazioni configurazione
-  - Re-esporta classi di configurazione da `original_parameterization`
+  - Re-esporta classi di configurazione da `configuration`
 
 ## Utilizzo della libreria
 
@@ -85,4 +85,3 @@ read_nivo_table(
 ## Script batch `process_nivo_images.py`
 
 Script command-line per processare multiple immagini in batch con barra di progresso.
-
