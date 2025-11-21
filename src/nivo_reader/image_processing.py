@@ -1,12 +1,12 @@
 """Image preprocessing utilities for NIVO table extraction. Parts of the code are taken from MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
 
-from typing import Literal, Sequence
+from typing import Literal
 import logging
 
 import cv2
 from cv2.typing import MatLike
 import numpy as np
-from img2table.document.base.rotation import fix_rotation_image, rotate_img_with_border
+from img2table.document.base.rotation import fix_rotation_image
 from img2table.document.base.rotation import (
     get_relevant_angles,
     estimate_skew,

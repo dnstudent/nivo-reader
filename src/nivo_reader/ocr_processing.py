@@ -13,7 +13,6 @@ import polars_distance as pld  # noqa: F401
 import pytesseract
 from cv2.typing import MatLike, Rect
 from numpy.typing import NDArray
-from numba import njit, i4, optional
 
 from .configuration.table_and_cell_detection import (
     WordBlobsCreationParameters,
