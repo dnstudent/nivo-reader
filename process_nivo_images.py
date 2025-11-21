@@ -79,7 +79,7 @@ def process_images(
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,
-    nchars_threshold: int = 30,
+    nchars_threshold: int = 20,
     extra_width: int = 6,
     low_confidence_threshold: float = 0.7,
     overwrite: bool = False,

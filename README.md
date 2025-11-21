@@ -5,7 +5,7 @@ python process_nivo_images.py \
   folder/ \
   --output-dir ./output \
   --debug-dir ./debug \
-  --clips 260 0 0 0 \
+  --clips 280 0 0 0 \
   --table-shape 2050 1385 \
   --anagrafica-file .../Anagrafica_Genova.xlsx \
   [opzioni aggiuntive]
