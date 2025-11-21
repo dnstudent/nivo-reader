@@ -1,15 +1,206 @@
 """Image preprocessing utilities for NIVO table extraction. Parts of the code are taken from MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
 
+from typing import Literal, Sequence
+import logging
+
 import cv2
-import numpy as np
 from cv2.typing import MatLike
-from img2table.document.base.rotation import fix_rotation_image
+import numpy as np
+from img2table.document.base.rotation import fix_rotation_image, rotate_img_with_border
+from img2table.document.base.rotation import (
+    get_relevant_angles,
+    estimate_skew,
+    get_connected_components,
+)
 
 from .configuration.preprocessing import (
     BinarizationParameters,
     PreprocessingParameters,
     ThresholdParameters,
+    LinesDetectionParameters,
+    LinesCombinationParameters,
 )
+
+logger = logging.getLogger("nivo_reader.image_processing")
+
+
+def detect_lines(
+    img_bin: MatLike,
+    table_side: int | None,
+    parameters: LinesDetectionParameters,
+    kind: Literal["vertical", "horizontal"],
+) -> MatLike:
+    """Detect lines (horizontal or vertical) in binary image.
+
+    Args:
+        img_bin: Binary image with white foreground
+        table_side: Size of table along relevant axis
+        parameters: Line detection configuration
+        kind: "vertical" or "horizontal"
+
+    Returns:
+        Image with detected lines
+    """
+    assert kind in ["vertical", "horizontal"]
+    if img_bin.mean() > 127.5:
+        logger.warning(
+            "The image passed to line detection has more foreground color than background. Did you forget to invert it?"
+        )
+    if table_side is None:
+        kernel_size = (
+            img_bin.shape[0] if kind == "horizontal" else img_bin.shape[1]
+        ) // parameters.kernel_divisor
+    else:
+        kernel_size = table_side // parameters.kernel_divisor
+    kernel_shape = (1, kernel_size) if kind == "vertical" else (kernel_size, 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_shape)
+    eroded_image = cv2.erode(
+        img_bin,
+        kernel,
+        iterations=parameters.erosion_iterations,
+    )
+    return cv2.dilate(
+        eroded_image,
+        kernel,
+        iterations=parameters.dilation_iterations,
+    )
+
+
+def combine_lines(
+    vertical_lines: MatLike,
+    horizontal_lines: MatLike,
+    parameters: LinesCombinationParameters,
+) -> MatLike:
+    """Combine vertical and horizontal lines with dilation.
+
+    Args:
+        vertical_lines: Vertical line image
+        horizontal_lines: Horizontal line image
+        parameters: Combination configuration
+
+    Returns:
+        Combined and dilated line image
+    """
+    combined = cv2.addWeighted(vertical_lines, 1, horizontal_lines, 1, 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, parameters.dilation_kernel_shape)
+    combined_dilated = cv2.dilate(
+        combined, kernel, iterations=parameters.dilation_iterations
+    )
+    return combined_dilated
+
+
+def contour_hw_ratio(contour):
+    _, _, w, h = cv2.boundingRect(contour)
+    return h / w
+
+
+# Inspired by MeteoSaver
+def nivo_lines_angle(
+    image: MatLike,
+    orientation: Literal["vertical", "horizontal"],
+    lines_detection_parameters: LinesDetectionParameters,
+) -> float | None:
+    vertical_lines = detect_lines(
+        image, table_side=None, kind=orientation, parameters=lines_detection_parameters
+    )
+
+    # TODO: watch out for the hardcoded parameter
+    vertical_boxes = list(
+        filter(
+            lambda box: box[2] > 0 and box[3] / box[2] > 20,
+            extract_contours_boxes(vertical_lines),
+        )
+    )
+
+    # weights = [h for _, _, _, h in vertical_boxes]
+    angles = [np.arctan(h / w) if w > 1 else np.pi / 2 for _, _, w, h in vertical_boxes]
+
+    if angles:
+        # return float(np.degrees(np.average(angles, weights=weights)))
+        return float(np.degrees(np.median(angles)))
+    else:
+        return None
+
+
+def img2table_lines_angle(img: np.ndarray) -> float:
+    """
+    Fix rotation of input image (based on https://www.mdpi.com/2079-9292/9/1/55) by at most 45 degrees
+    :param img: image array
+    :return: rotated image array and boolean indicating if the image has been rotated
+    """
+    # Get connected components of the images
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    cc_centroids, ref_height, thresh = get_connected_components(img=gray)
+
+    # Check number of centroids
+    if len(cc_centroids) < 2:
+        return img, False
+
+    # Compute most likely angles from connected components
+    angles = get_relevant_angles(centroids=cc_centroids, ref_height=ref_height)
+    # Estimate skew
+    return estimate_skew(angles=angles, thresh=thresh)
+
+
+def deskew_nivo(wb_table_image: MatLike, *oth_images: *tuple[MatLike, ...]):
+    """
+    Deskews an image by detecting and correcting its skew based on the orientation of detected horizontal lines.
+
+    This function corrects the skew of an input image by first detecting horizontal lines within the image using morphological operations. It calculates the average angle of these detected lines and rotates the image by this angle to align the horizontal lines correctly, effectively deskewing the image. The result is an image where the content is horizontally aligned, which is particularly useful for preprocessing before further analysis or OCR (Optical Character Recognition).
+
+    Parameters
+    --------------
+    wb_table_image :
+        The input image that needs to be deskewed. This image must be binary: white foreground and black background. It should be just the table.
+
+    Returns
+    --------------
+    lines_median_angle :
+        The median angle of vertical lines
+    wb_rotated:
+        The deskewed wb_table_image
+    *oth:
+        Other images rotated by the same angle
+    """
+
+    # Detect vertical lines and calculate the average angle
+
+    # TODO: watch out for the hardcoded parameters
+    lines_median_angle = nivo_lines_angle(
+        wb_table_image,
+        orientation="vertical",
+        lines_detection_parameters=LinesDetectionParameters(
+            kernel_divisor=20, dilation_iterations=1
+        ),
+    )
+    if not lines_median_angle:
+        return None, wb_table_image, *oth_images
+
+    # Rotate the image to deskew
+    (h, w) = wb_table_image.shape[:2]
+    center = (h // 2, w // 2)
+    M = cv2.getRotationMatrix2D(center, 90 - lines_median_angle, 1.0)
+    wb_rotated = cv2.warpAffine(
+        wb_table_image,
+        M,
+        (w, h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+
+    oth_rotated = []
+    for image in oth_images:
+        (h, w) = image.shape[:2]
+        center = (h // 2, w // 2)
+        M = cv2.getRotationMatrix2D(center, 90 - lines_median_angle, 1.0)
+        oth_rotated.append(
+            cv2.warpAffine(
+                image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+            )
+        )
+
+    return lines_median_angle, wb_rotated, *oth_rotated
 
 
 def my_table_struct(bw_image: MatLike) -> MatLike:
@@ -89,7 +280,9 @@ def ms_threshold(image: MatLike, threshold_parameters: ThresholdParameters) -> M
 
 
 def preproc(
-    image: MatLike, preprocessing_parameters: PreprocessingParameters
+    image: MatLike,
+    preprocessing_parameters: PreprocessingParameters,
+    deskew_method: Literal["nivo", "img2table"],
 ) -> tuple[MatLike, MatLike, MatLike, MatLike]:
     """Preprocess image: rotate, convert to grayscale, binarize, threshold.
 
@@ -102,9 +295,27 @@ def preproc(
     """
     # Fix rotation
     image = fix_rotation_image(image)[0]
+    if deskew_method == "nivo":
+        image_in_grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        thresh = ms_threshold(
+            image_in_grayscale, preprocessing_parameters.threshold_parameters
+        )
+        angle_before = nivo_lines_angle(
+            thresh, "vertical", LinesDetectionParameters(20, dilation_iterations=1)
+        )
+        _, thresh, nivo_image = deskew_nivo(thresh, image)
+        angle_after = nivo_lines_angle(
+            thresh, "vertical", LinesDetectionParameters(20, dilation_iterations=1)
+        )
+        if abs(90 - angle_before) > abs(90 - angle_after):
+            image = nivo_image
+    elif deskew_method == "img2table":
+        pass
+    else:
+        raise NotImplementedError
 
-    # Convert to grayscale
     image_in_grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Convert to grayscale
 
     # Apply adaptive thresholding
     binarized_image = ms_binary(

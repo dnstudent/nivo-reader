@@ -40,6 +40,7 @@ def generate_roi(
         row_height,
     ]
 
+
 def generate_roi_grid(
     row_positions: list[int],
     column_separators: list[int],
@@ -118,6 +119,7 @@ def roi_grid_coordinates(
     # Combine results
     return [(int(row_labels[i]), int(col_labels[i])) for i in range(len(rois))]
 
+
 def is_rect_contained(inner: Rect, outer: Rect) -> bool:
     """Check if inner rectangle is contained in outer rectangle.
 
@@ -140,6 +142,7 @@ def is_rect_contained(inner: Rect, outer: Rect) -> bool:
         and inner_x2 <= outer_x2
         and inner_y2 <= outer_y2
     )
+
 
 def label_contained_roi(
     container_rois: list[Rect], labels: list[Any], child_roi: Rect
@@ -180,7 +183,7 @@ def autocrop_axis(a: NDArray, axis: int):
     a_with_content = np.argwhere(a.any(axis)).flatten()
     if len(a_with_content) > 0:
         return int(a_with_content.min()), int(a_with_content.max())
-    return 0, len(a_with_content)
+    return 0, a.shape[1 - axis]
 
 
 def autocrop_roi(roi: Rect, image: MatLike) -> Rect:
@@ -198,6 +201,7 @@ def autocrop_roi(roi: Rect, image: MatLike) -> Rect:
     x_from, x_to = autocrop_axis(is_fg, axis=0)
     y_from, y_to = autocrop_axis(is_fg, axis=1)
     return [roi[0] + x_from, roi[1] + y_from, x_to - x_from, y_to - y_from]
+
 
 def pad_roi(roi: Rect, padding: int | tuple[int, int]) -> Rect:
     """Add padding to region of interest.
@@ -225,6 +229,7 @@ def pad_roi(roi: Rect, padding: int | tuple[int, int]) -> Rect:
         h + 2 * pad_y,
     ]
 
+
 def rect2easy(rect: Rect) -> list[int]:
     """Convert OpenCV rect to easyocr format [x1, x2, y1, y2].
 
@@ -236,6 +241,7 @@ def rect2easy(rect: Rect) -> list[int]:
     """
     x, y, w, h = rect
     return [x, x + w, y, y + h]
+
 
 def easyrect2rect(eo_rect: list[int]) -> Rect:
     """Convert easyocr format to OpenCV rect.
@@ -304,12 +310,14 @@ def resize_roi_to_largest_connected_region(
 
     return [int(x_abs), int(y_abs), int(w_rel), int(h_rel)]
 
+
 def expand_roi_atleast(roi: Rect, atleast: tuple[int, int]):
     _, _, w, h = roi
     exp_w, exp_h = atleast
     pad_x = int(ceil(max((exp_w - w) / 2, 0)))
     pad_y = int(ceil(max((exp_h - h) / 2, 0)))
     return pad_roi(roi, (pad_x, pad_y))
+
 
 def extract(image: MatLike, rect: Rect) -> MatLike:
     """Extract rectangular region from image.

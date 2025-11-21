@@ -1,6 +1,6 @@
 """Parts of the code were inspired by MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
 
-from itertools import pairwise, takewhile
+from itertools import takewhile, pairwise
 from string import ascii_letters
 from typing import Sequence
 
@@ -13,6 +13,7 @@ import polars_distance as pld  # noqa: F401
 import pytesseract
 from cv2.typing import MatLike, Rect
 from numpy.typing import NDArray
+from numba import njit, i4, optional
 
 from .configuration.table_and_cell_detection import (
     WordBlobsCreationParameters,
@@ -20,6 +21,7 @@ from .configuration.table_and_cell_detection import (
 from .image_processing import extract_contours_boxes
 from .roi_utilities import easyrect2rect, extract, rect2easy
 from .table_detection import create_word_blobs
+from .excel_output import draw_bounding_boxes
 
 
 def filter_by_size(
@@ -60,15 +62,87 @@ def merge_boxes(boxes: list[Rect]) -> Rect | None:
     return [bounds[0], bounds[1], bounds[2] - bounds[0], bounds[3] - bounds[1]]
 
 
-def sorted_boxes_are_within_line(boxes: tuple[Rect, Rect], row_height: int) -> bool:
+def _sorted_boxes_are_vertically_close(
+    boxes: tuple[Rect, Rect], row_height: int
+) -> bool:
     """boxes[0] is supposed to be above boxes[1]"""
-    _, y1, _, h1 = boxes[0]
-    y2 = boxes[1][1]
-    return 0 <= y2 - (y1 + h1) <= row_height
+    # _, y1, _, h1 = boxes[0]
+    # y2 = boxes[1][1]
+    return 0 <= box_y_center(boxes[1]) - box_y_center(boxes[0]) <= 1.5 * row_height
+
+
+def box_y_center(box: Rect):
+    return int(box[1] + box[3] / 2)
+
+
+def merge_same_line_boxes(boxes: list[Rect], line_height: int) -> list[Rect]:
+    """Merge boxes that lie on the same line.
+
+    Boxes are considered to be on the same line if their y-centers
+    lie within char_height/2 from one another.
+
+    Args:
+        boxes: list of rectangles
+        char_height: Character height used to determine line proximity
+
+    Returns:
+        List of merged boxes, sorted by y-coordinate
+    """
+    if not boxes:
+        return []
+
+    # Sort boxes by y-coordinate to process top-to-bottom
+    boxes = sorted(boxes, key=lambda b: b[1])
+
+    # Group boxes by their y-centers (boxes within char_height/2 belong to same line)
+    merged_boxes: list[Rect] = []
+    threshold = line_height / 2
+
+    current_group: list[Rect] = [boxes[0]]
+    current_y_center = box_y_center(current_group[0])
+
+    for box in boxes[1:]:
+        box_y_center_val = box_y_center(box)
+
+        # Check if this box belongs to the current line
+        if abs(box_y_center_val - current_y_center) <= threshold:
+            current_group.append(box)
+        else:
+            # Merge the current group and start a new one
+            merged_box = merge_boxes(current_group)
+            if merged_box:
+                merged_boxes.append(merged_box)
+            current_group = [box]
+            current_y_center = box_y_center(current_group[0])
+
+    # Don't forget to merge the last group
+    if current_group:
+        merged_box = merge_boxes(current_group)
+        if merged_box:
+            merged_boxes.append(merged_box)
+
+    return merged_boxes
+
+
+def row_indexer(row_height: int, rows: list[int]):
+    rows = np.array(rows)
+
+    def _indexer(box: Rect):
+        distances = np.abs(rows - box_y_center(box))
+        return (
+            np.argmin(distances[distances < row_height / 2])
+            if len(distances) > 0
+            else None
+        )
+
+    return _indexer
 
 
 def merge_and_filter_station_name_boxes(
-    input_boxes: list[Rect], rows_positions: list[int], char_height: int
+    input_boxes: list[Rect],
+    rows_positions: list[int],
+    char_height: int,
+    debug_img: MatLike | None = None,
 ) -> list[Rect]:
     """Merge boxes that are part of the same station name.
     Parts of a station name are generally within one table row of each other. Only the last box of a station name is aligned with the data row, though.
@@ -82,23 +156,40 @@ def merge_and_filter_station_name_boxes(
         Merged and filtered boxes
     """
     input_boxes = sorted(input_boxes, key=lambda b: b[1])
-    input_boxes_centers = np.array([int(y + h / 2) for _, y, _, h in input_boxes])
-    rows_positions = sorted(rows_positions)
-
     rows_heights = list(map(lambda p: p[1] - p[0], pairwise(rows_positions)))
     if not rows_heights:
         rows_heights = [char_height]
     # TODO: the 3 * char_height is a guess, we should find a better way to estimate the row height
     row_height = min(min(rows_heights), int(3 * char_height))
 
+    horizontally_merged_boxes = sorted(
+        merge_same_line_boxes(input_boxes, row_height), key=lambda b: b[1]
+    )
+
+    if debug_img is not None:
+        draw_bounding_boxes(
+            debug_img,
+            horizontally_merged_boxes,
+            boxes=True,
+            color=(255, 255, 0),
+            overwrite=True,
+        )
+
+    rows_positions = sorted(rows_positions)
+
     output_boxes: list[Rect] = []
 
+    merged_boxes_centers = np.array(
+        [int(y + h / 2) for _, y, _, h in horizontally_merged_boxes]
+    )
     last_matched_box_i = -1
     for row_position in rows_positions:
         matching_name_box_i = (
             int(
                 np.argmin(
-                    np.abs(input_boxes_centers[last_matched_box_i + 1 :] - row_position)
+                    np.abs(
+                        merged_boxes_centers[last_matched_box_i + 1 :] - row_position
+                    )
                 )
             )
             + last_matched_box_i
@@ -106,8 +197,9 @@ def merge_and_filter_station_name_boxes(
         )
         to_merge_name_box_is = list(
             takewhile(
-                lambda i: sorted_boxes_are_within_line(
-                    (input_boxes[i], input_boxes[i + 1]), row_height
+                lambda i: _sorted_boxes_are_vertically_close(
+                    (horizontally_merged_boxes[i], horizontally_merged_boxes[i + 1]),
+                    row_height,
                 ),
                 range(matching_name_box_i - 1, last_matched_box_i, -1),
             )
@@ -115,10 +207,12 @@ def merge_and_filter_station_name_boxes(
 
         if to_merge_name_box_is:
             merged_box = merge_boxes(
-                input_boxes[to_merge_name_box_is[-1] : matching_name_box_i]
+                horizontally_merged_boxes[
+                    to_merge_name_box_is[-1] : matching_name_box_i + 1
+                ]
             )
         else:
-            merged_box = input_boxes[matching_name_box_i]
+            merged_box = horizontally_merged_boxes[matching_name_box_i]
         last_matched_box_i = matching_name_box_i
         output_boxes.append(merged_box)  # type: ignore : it is always not None
 
@@ -171,10 +265,10 @@ def associate_closest_station_names(
     )
     results_df = (
         (
-            pl.DataFrame({"ocr_name": results})
+            pl.DataFrame({"ocr_name": results}, schema={"ocr_name": pl.String})
             .with_columns(pl.row_index())
             .with_columns(
-                simplified_name=pl.col("ocr_name")
+                simplified_name=pl.coalesce("ocr_name", pl.lit(""))
                 .str.to_lowercase()
                 .str.strip_chars()
                 .str.replace_all(r"\s+", " ")

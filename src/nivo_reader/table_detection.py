@@ -7,20 +7,20 @@ from typing import Literal
 import cv2
 import numpy as np
 from cv2.typing import MatLike, Rect
+from numpy.typing import NDArray
 from scipy.signal import find_peaks
 
 from .configuration.preprocessing import (
     ThresholdParameters,
 )
 from .configuration.table_and_cell_detection import (
-    LinesCombinationParameters,
     LinesDetectionParameters,
     LinesExtractionParameters,
 )
-from .image_processing import ms_threshold
+from .image_processing import ms_threshold, detect_lines, combine_lines
 
 
-def ok_side(x: int, expected_x: int, tol: float = 0.1) -> bool:
+def ok_side(x: int, expected_x: int, tol: float) -> bool:
     """Check if dimension is within tolerance of expected value.
 
     Args:
@@ -36,8 +36,7 @@ def ok_side(x: int, expected_x: int, tol: float = 0.1) -> bool:
 
 def try_detect_table_rect(
     gray_image: MatLike,
-    expected_table_width: int,
-    expected_table_height: int,
+    expected_table_shape: tuple[int, int],
     threshold_parameters: ThresholdParameters,
 ) -> Rect | None:
     """Detect table rectangle in image.
@@ -52,11 +51,12 @@ def try_detect_table_rect(
         Bounding rectangle of table or None if not found
     """
     thresh = ms_threshold(gray_image, threshold_parameters)
-
+    expected_table_width, expected_table_height = expected_table_shape
     bboxes = sorted(
         filter(
-            lambda r: ok_side(r[2], expected_table_width)
-            and ok_side(r[3], expected_table_height),
+            # TODO: tol are fixed
+            lambda r: ok_side(r[2], expected_table_width, tol=0.1)
+            and ok_side(r[3], expected_table_height, tol=0.1),
             map(
                 lambda cnt: cv2.boundingRect(cnt),
                 cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0],
@@ -89,67 +89,6 @@ def cut_out_tables(
     return image[y : y + h, x : x + w], image[
         y + clip_up : y + h - clip_down, x + clip_left : x + w - clip_right
     ]
-
-
-def detect_lines(
-    img_bin: MatLike,
-    table_side: int | None,
-    parameters: LinesDetectionParameters,
-    kind: Literal["vertical", "horizontal"],
-) -> MatLike:
-    """Detect lines (horizontal or vertical) in binary image.
-
-    Args:
-        img_bin: Binary image with white foreground
-        table_side: Size of table along relevant axis
-        parameters: Line detection configuration
-        kind: "vertical" or "horizontal"
-
-    Returns:
-        Image with detected lines
-    """
-    assert kind in ["vertical", "horizontal"]
-    if table_side is None:
-        kernel_size = (
-            img_bin.shape[0] if kind == "horizontal" else img_bin.shape[1]
-        ) // parameters.kernel_divisor
-    else:
-        kernel_size = table_side // parameters.kernel_divisor
-    kernel_shape = (1, kernel_size) if kind == "vertical" else (kernel_size, 1)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_shape)
-    eroded_image = cv2.erode(
-        img_bin,
-        kernel,
-        iterations=parameters.erosion_iterations,
-    )
-    return cv2.dilate(
-        eroded_image,
-        kernel,
-        iterations=parameters.dilation_iterations,
-    )
-
-
-def combine_lines(
-    vertical_lines: MatLike,
-    horizontal_lines: MatLike,
-    parameters: LinesCombinationParameters,
-) -> MatLike:
-    """Combine vertical and horizontal lines with dilation.
-
-    Args:
-        vertical_lines: Vertical line image
-        horizontal_lines: Horizontal line image
-        parameters: Combination configuration
-
-    Returns:
-        Combined and dilated line image
-    """
-    combined = cv2.addWeighted(vertical_lines, 1, horizontal_lines, 1, 1)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, parameters.dilation_kernel_shape)
-    combined_dilated = cv2.dilate(
-        combined, kernel, iterations=parameters.dilation_iterations
-    )
-    return combined_dilated
 
 
 def extract_table_lines(
@@ -238,7 +177,7 @@ def create_word_blobs(image_cleaned: MatLike, parameters) -> MatLike:
     return image_with_blobs
 
 
-def detect_column_separators(table_img: MatLike, char_width: int) -> np.ndarray:
+def detect_column_separators(table_img: MatLike, char_width: int) -> list[int]:
     """Detect vertical column separator positions.
 
     Args:
@@ -254,11 +193,16 @@ def detect_column_separators(table_img: MatLike, char_width: int) -> np.ndarray:
         LinesDetectionParameters(20),
         kind="vertical",
     )
-    return find_peaks(
-        vertical_lines.sum(axis=0),
-        height=table_img.shape[1] * 0.7,
-        distance=3 * char_width,
-    )[0]
+    peaks = list(
+        find_peaks(
+            vertical_lines.sum(axis=0),
+            height=table_img.shape[1] * 0.7,
+            distance=3 * char_width,
+        )[0]
+    )
+    if peaks[0] > 2 * char_width:
+        peaks.insert(0, 0)
+    return peaks
 
 
 def detect_rows_positions(

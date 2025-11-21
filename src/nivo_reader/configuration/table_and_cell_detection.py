@@ -1,51 +1,9 @@
-from typing import Self, Literal
-
 from dataclasses import dataclass, field
 
 from fancy_dataclass import TOMLDataclass, JSONDataclass
 import cv2
 
-
-@dataclass
-class LinesDetectionParameters(TOMLDataclass, JSONDataclass):
-    kernel_divisor: int = field(
-        metadata={
-            "doc": "Divisor of the image side to compute the convolution kernel side"
-        }
-    )
-    erosion_iterations: int = field(
-        default=1,
-        metadata={"doc": "Iterations of the erosion procedure during line detection"},
-    )
-    dilation_iterations: int = field(
-        default=5,
-        metadata={"doc": "Iterations of the dilation procedure during line detection"},
-    )
-
-    @classmethod
-    def default(cls, orientation: Literal["vertical", "horizontal"]) -> Self:
-        if orientation == "horizontal":
-            return cls(kernel_divisor=20)
-        elif orientation == "vertical":
-            return cls(kernel_divisor=50)
-        else:
-            raise AttributeError("Orientation must be 'horizontal' or 'vertical'")
-
-
-@dataclass
-class LinesCombinationParameters(TOMLDataclass, JSONDataclass):
-    dilation_kernel_shape: tuple[int, int] = field(
-        default=(2, 2),
-        metadata={
-            "doc": "Shape of the kernel for the dilation procedure in the lines combination operation"
-        },
-    )
-    dilation_iterations: int = field(
-        default=5,
-        metadata={
-            "doc": "Number of iterations of the dilation procedure in the lines combination operation"
-        },
-    )
+from .preprocessing import LinesDetectionParameters, LinesCombinationParameters
 
 
 @dataclass

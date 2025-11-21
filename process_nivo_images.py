@@ -103,7 +103,6 @@ def process_images(
         overwrite: Whether to overwrite existing files
     """
     # Initialize OCR reader once
-    print("Initializing OCR reader...")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -133,11 +132,14 @@ def process_images(
         print("No images to process")
         return
 
-    print(f"Processing {len(images_to_process)} images...")
+    print("Initializing OCR reader...")
 
     easyreader = easyocr.Reader(lang_list=["it"])
-    paddletextrecog = paddleocr.TextRecognition(model_name="latin_PP-OCRv5_mobile_rec")
+    paddletextrecog = (
+        None  # paddleocr.TextRecognition(model_name="latin_PP-OCRv5_mobile_rec")
+    )
 
+    print(f"Processing {len(images_to_process)} images...")
     # Process images with progress bar
     for img_path in tqdm(images_to_process, desc="Processing images"):
         try:
@@ -173,7 +175,9 @@ def process_images(
             tqdm.write(f"✓ Processed: {img_path.relative_to(images_dir)}")
 
         except Exception as e:
-            logging.exception(f"Error processing {img_path.relative_to(images_dir)}: {e}")
+            logging.exception(
+                f"Error processing {img_path.relative_to(images_dir)}: {e}"
+            )
             tqdm.write(f"✗ Error processing {img_path.relative_to(images_dir)}: {e}")
 
 
@@ -303,7 +307,12 @@ def main():
     args = parser.parse_args()
 
     if args.debug_dir:
-        logging.basicConfig(level=logging.DEBUG, filename=Path(args.debug_dir) / "process_nivo_images.log", filemode="w")
+        Path(args.debug_dir).mkdir(exist_ok=True, parents=True)
+        logging.basicConfig(
+            level=logging.DEBUG,
+            filename=Path(args.debug_dir) / "process_nivo_images.log",
+            filemode="w",
+        )
     else:
         logging.basicConfig(level=logging.CRITICAL)
 

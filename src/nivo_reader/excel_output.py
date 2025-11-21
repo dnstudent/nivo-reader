@@ -160,6 +160,8 @@ def draw_bounding_boxes(
     thickness: int = 5,
     width_factor: float = 0.0,
     height_factor: float = 0.0,
+    overwrite: bool = False,
+    **kwargs,
 ) -> MatLike:
     """Draw bounding boxes on image.
 
@@ -175,9 +177,11 @@ def draw_bounding_boxes(
     Returns:
         Image with drawn boxes
     """
-    overlay = base_image.copy()
-    if len(overlay.shape) == 2:  # If grayscale, convert to RGB
-        overlay = cv2.cvtColor(overlay, cv2.COLOR_GRAY2RGB)
+    if not overwrite:
+        base_image = base_image.copy()
+
+    if len(base_image.shape) == 2 and not overwrite:  # If grayscale, convert to RGB
+        base_image = cv2.cvtColor(base_image, cv2.COLOR_GRAY2RGB)
 
     for contour in contours:
         if contour is not None and len(contour) > 0:
@@ -192,9 +196,11 @@ def draw_bounding_boxes(
             w -= int(w * width_factor)
             h += int(h * height_factor * 2)
 
-            cv2.rectangle(overlay, (x, y), (x + w, y + h), color, thickness)
+            cv2.rectangle(
+                base_image, (x, y), (x + w, y + h), color, thickness, **kwargs
+            )
 
-    return overlay
+    return base_image
 
 
 def draw_straight_lines(

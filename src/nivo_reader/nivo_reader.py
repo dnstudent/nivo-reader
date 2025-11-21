@@ -99,11 +99,11 @@ def read_station_names(
     anagrafica_names: list[str | None] = list(
         map(lambda d: d["name"], anagrafica_closest)
     )
-    analgrafica_similarities: list[float | None] = list(
+    anagrafica_similarities: list[float | None] = list(
         map(lambda d: d["string_similarity"], anagrafica_closest)
     )
 
-    return anagrafica_names, analgrafica_similarities, ocr_name_boxes
+    return anagrafica_names, anagrafica_similarities, ocr_name_boxes
 
 
 def prepare_value_roi(
@@ -219,12 +219,11 @@ def read_nivo_table(
     image, threshold_image, binarized_image, _ = preproc(
         original_image,
         PreprocessingParameters(),
+        deskew_method="nivo",
     )
 
     # Detect table rectangle
-    rect = try_detect_table_rect(
-        image, table_shape[0], table_shape[1], ThresholdParameters()
-    )
+    rect = try_detect_table_rect(image, table_shape, ThresholdParameters())
 
     if rect is None:
         raise ValueError("Could not detect table rectangle in image")
@@ -243,9 +242,7 @@ def read_nivo_table(
     rows_centers = detect_rows_positions(
         binarized_subtable_wo_lines, nchars_threshold, number_char_shape
     ).tolist()
-    cols_separators = detect_column_separators(
-        threshold_subtable, number_char_shape[0]
-    ).tolist()
+    cols_separators = detect_column_separators(threshold_subtable, number_char_shape[0])
 
     # Save debug artifacts if requested
     if debug_dir:
