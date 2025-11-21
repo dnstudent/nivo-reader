@@ -1,12 +1,13 @@
 [project]
 name = "nivo-reader"
 version = "0.1.0"
-description = "Add your description here"
+description = "Libreria per l'estrazione automatica di dati da tabelle NIVO (tabelle meteorologiche storiche) da immagini scansionate"
 readme = "README.md"
 authors = [
     { name = "dnstudent", email = "davide.nicoli@unimi.it" }
 ]
 requires-python = ">=3.12"
+repository = { url = "https://github.com/dnstudent/nivo-reader" }
 dependencies = [
     "easyocr>=1.7.3",
     "fancy-dataclass>=0.10.1",
