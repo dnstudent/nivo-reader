@@ -3,14 +3,14 @@
 from itertools import takewhile, pairwise
 from string import ascii_letters
 import logging
-from typing import Any, Sequence
+from typing import Any
 
 import cv2
 import easyocr
 import numpy as np
 import paddleocr
 import polars as pl
-import polars_distance as pld  # noqa: F401
+import polars_distance as pld  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import pytesseract
 from cv2.typing import MatLike, Rect
 from numpy.typing import NDArray
@@ -26,9 +26,7 @@ from .excel_output import draw_bounding_boxes
 logger = logging.getLogger(__name__)
 
 
-def filter_by_size(
-    input_boxes: Sequence[Rect], char_shape: tuple[int, int]
-) -> list[Rect]:
+def filter_by_size(input_boxes: list[Rect], char_shape: tuple[int, int]) -> list[Rect]:
     """Filter boxes by minimum size.
 
     Args:
@@ -126,9 +124,6 @@ def merge_same_line_boxes(boxes: list[Rect], line_height: int) -> list[Rect]:
     return merged_boxes
 
 
-
-
-
 def merge_and_filter_station_name_boxes(
     input_boxes: list[Rect],
     rows_positions: list[int],
@@ -158,7 +153,7 @@ def merge_and_filter_station_name_boxes(
     )
 
     if debug_img is not None:
-        draw_bounding_boxes(
+        _ = draw_bounding_boxes(
             debug_img,
             horizontally_merged_boxes,
             color=(255, 255, 0),
@@ -207,7 +202,7 @@ def merge_and_filter_station_name_boxes(
         else:
             merged_box = horizontally_merged_boxes[matching_name_box_i]
         last_matched_box_i = matching_name_box_i
-        output_boxes.append(merged_box)  # type: ignore : it is always not None
+        output_boxes.append(merged_box)
 
     return output_boxes
 
@@ -230,7 +225,7 @@ def detect_station_boxes(
         WordBlobsCreationParameters(gap_kernel_shape=(char_shape[0] // 2, 1)),
     )
     word_boxes = list(extract_contours_boxes(word_blobs))
-    word_boxes.sort(key=lambda r: r[1])
+    word_boxes.sort(key=lambda r: r[1])  # pyright: ignore[reportUnknownMemberType]
     filtered_wboxes = filter_by_size(word_boxes, char_shape)
     filtered_wboxes = merge_and_filter_station_name_boxes(
         filtered_wboxes, rows_centers, char_shape[1]
@@ -239,8 +234,8 @@ def detect_station_boxes(
 
 
 def associate_closest_station_names(
-    results: Sequence[str | None], anagrafica: Sequence[str]
-) -> list[dict]:
+    results: list[str | None], anagrafica: list[str]
+) -> list[dict[str, Any]]:
     """Match OCR results to known station names using Levenshtein distance.
 
     Args:
@@ -270,8 +265,8 @@ def associate_closest_station_names(
         )
         .with_columns(
             distance=(
-                pl.col("simplified_name")
-                .dist_str.levenshtein("simplified_name_anagrafica")  # type: ignore
+                pl.col("simplified_name")  # pyright: ignore[reportUnknownMemberType]
+                .dist_str.levenshtein("simplified_name_anagrafica")  # type: ignore  # pyright: ignore[reportAttributeAccessIssue]
                 .cast(pl.Int32)
             )
         )
@@ -305,7 +300,7 @@ def compute_name_rows(boxes: list[Rect]) -> list[int]:
     return np.argsort(ys).tolist()
 
 
-def transpose_recognition_results(recognition: list) -> dict:
+def transpose_recognition_results(recognition: list[dict[str, Any]]) -> dict[str, list[Any]]:
     """Transpose recognition results to group by key.
 
     Args:
@@ -317,7 +312,7 @@ def transpose_recognition_results(recognition: list) -> dict:
     return {key: [r[key] for r in recognition] for key in recognition[0].keys()}
 
 
-def merge_easypolys(polys: list | NDArray) -> list[int]:
+def merge_easypolys(polys: list[list[list[int]]] | NDArray[np.int_]) -> list[int]:
     """Merge multiple easyocr polygons into single rectangle.
 
     Args:
@@ -335,7 +330,7 @@ def merge_easypolys(polys: list | NDArray) -> list[int]:
     ]
 
 
-def process_easyocr_readtext_result(cell_results: list[dict]) -> dict:
+def process_easyocr_readtext_result(cell_results: list[dict[str, Any]]) -> dict[str, Any]:
     """Process easyocr readtext results for a single cell.
 
     Args:
@@ -357,7 +352,7 @@ def process_easyocr_readtext_result(cell_results: list[dict]) -> dict:
     }
 
 
-def process_easyocr_recognize_result(box_results: list[dict]) -> list[dict]:
+def process_easyocr_recognize_result(box_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Process easyocr recognize results.
 
     Args:
@@ -376,7 +371,7 @@ def easyocr_names_reader(ocr: easyocr.Reader):
         recognition_results = transpose_recognition_results(
             [
                 process_easyocr_readtext_result(
-                    ocr.readtext(  # type: ignore
+                    ocr.readtext(  # type: ignore  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
                         extract(image, roi),
                         allowlist=f"{ascii_letters}()' /áàóòúùèéìi",
                         paragraph=False,
@@ -406,7 +401,7 @@ def easyocr_values_reader(ocr: easyocr.Reader):
         easyrois = list(map(rect2easy, rois))
         recognition_results = transpose_recognition_results(
             process_easyocr_recognize_result(
-                ocr.recognize(  # type: ignore
+                ocr.recognize(  # type: ignore  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
                     image,
                     horizontal_list=easyrois,
                     free_list=[],
@@ -441,7 +436,7 @@ def paddleocr_values_reader(ocr: paddleocr.TextRecognition):
                 rois,
             )
         )
-        raw_results: list[dict] = ocr.predict(input=crops, batch_size=8)
+        raw_results: list[dict[str, Any]] = ocr.predict(input=crops, batch_size=8)  # pyright: ignore[reportUnknownMemberType]
         return (
             [r.get("rec_text") for r in raw_results],
             [r.get("rec_score") for r in raw_results],
@@ -451,7 +446,7 @@ def paddleocr_values_reader(ocr: paddleocr.TextRecognition):
     return _reader
 
 
-def process_tesseract_cell_result(result: dict, roi: Rect):
+def process_tesseract_cell_result(result: dict[str, Any], roi: Rect) -> dict[str, Any]:
     text = " ".join(result["text"]).strip() if result["text"] else None
     if result["conf"]:
         confident = np.array(result["conf"])
@@ -478,10 +473,10 @@ def process_tesseract_cell_result(result: dict, roi: Rect):
 def tesseract_values_reader(_: None):
     def _reader(image: MatLike, rois: list[Rect]):
         crops = list(map(lambda roi: extract(image, roi), rois))
-        recognition_results = [[], [], []]
+        recognition_results: tuple[list[str | None], list[float | None], list[Rect]] = ([], [], [])
         for crop, roi in zip(crops, rois):
             processed_result = process_tesseract_cell_result(
-                pytesseract.image_to_data(
+                pytesseract.image_to_data(  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
                     crop,
                     config="--psm 8 -c tessedit_char_whitelist=0123456789-_ --oem 1",
                     output_type="dict",

@@ -27,6 +27,12 @@ dependencies = [
 ]
 classifiers = ["Development Status :: 3 - Alpha", "Programming Language :: Python :: 3", "Intended Audience :: Science/Research"]
 
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+
 [project.urls]
 Repository = "https://github.com/dnstudent/nivo-reader"
 
@@ -46,3 +52,13 @@ dev = [
 
 [tool.uv.sources]
 easyocr = { git = "https://github.com/dnstudent/EasyOCR" }
+
+[tool.basedpyright]
+reportUnknownArgumentType = "none"
+reportUnknownLambdaType = "none"
+reportUnknownVariableType = "none"
+reportAny = "none"
+reportExplicitAny = "none"
+reportUnknownParameterType = "none"
+reportMissingParameterType = "none"
+reportMissingTypeStubs = "none"

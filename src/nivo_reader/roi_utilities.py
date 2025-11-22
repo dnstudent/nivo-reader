@@ -62,10 +62,10 @@ def generate_roi_grid(
     column_separators = sorted(column_separators)
     return [
         [
-            generate_roi(row_position, column_sep, char_height, extra_width)
+            generate_roi(row_position, column_seps, char_height, extra_width)
             for row_position in row_positions
         ]
-        for column_sep in pairwise(column_separators)
+        for column_seps in pairwise(column_separators)
     ]
 
 
@@ -92,11 +92,11 @@ def roi_grid_coordinates(
 
     # Cluster by Y-coordinate to find rows
     y_coords = centers[:, 1].reshape(-1, 1)
-    kmeans_rows = KMeans(n_clusters=n_rows, n_init=10)  # type: ignore
-    row_labels = kmeans_rows.fit_predict(y_coords)
+    kmeans_rows = KMeans(n_clusters=n_rows, n_init=10)  # pyright: ignore[reportArgumentType]
+    row_labels = kmeans_rows.fit_predict(y_coords)  # pyright: ignore[reportUnknownMemberType]
 
     # Sort row clusters by their center Y-coordinate
-    row_centers = kmeans_rows.cluster_centers_.flatten()
+    row_centers = kmeans_rows.cluster_centers_.flatten()  # pyright: ignore[reportUnknownMemberType]
     row_order = np.argsort(row_centers)
     row_mapping = {
         old_label: new_label for new_label, old_label in enumerate(row_order)
@@ -105,11 +105,11 @@ def roi_grid_coordinates(
 
     # Cluster by X-coordinate to find columns
     x_coords = centers[:, 0].reshape(-1, 1)
-    kmeans_cols = KMeans(n_clusters=n_cols, n_init=10)  # type: ignore
-    col_labels = kmeans_cols.fit_predict(x_coords)
+    kmeans_cols = KMeans(n_clusters=n_cols, n_init=10)  # pyright: ignore[reportArgumentType]
+    col_labels = kmeans_cols.fit_predict(x_coords)  # pyright: ignore[reportUnknownMemberType]
 
     # Sort column clusters by their center X-coordinate
-    col_centers = kmeans_cols.cluster_centers_.flatten()
+    col_centers = kmeans_cols.cluster_centers_.flatten()  # pyright: ignore[reportUnknownMemberType]
     col_order = np.argsort(col_centers)
     col_mapping = {
         old_label: new_label for new_label, old_label in enumerate(col_order)
@@ -179,7 +179,7 @@ def autocrop(image: MatLike) -> MatLike:
     return image[y_from : y_to + 1, x_from : x_to + 1]
 
 
-def autocrop_axis(a: NDArray, axis: int):
+def autocrop_axis(a: NDArray[Any], axis: int) -> tuple[int, int]:
     a_with_content = np.argwhere(a.any(axis)).flatten()
     if len(a_with_content) > 0:
         return int(a_with_content.min()), int(a_with_content.max())
@@ -286,7 +286,7 @@ def resize_roi_to_largest_connected_region(
     roi_with_blobs = create_word_blobs(roi_image, word_blobs_parameters)
 
     # Find connected components
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(
         roi_with_blobs, connectivity=8
     )
 

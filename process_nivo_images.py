@@ -4,7 +4,6 @@ import sys
 import warnings
 from itertools import chain
 from pathlib import Path
-from typing import Literal
 import logging
 
 import easyocr
@@ -75,7 +74,6 @@ def process_images(
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
     anagrafica: list[str],
-    reader: Literal["easyocr", "tesseract"],
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,
@@ -135,13 +133,11 @@ def process_images(
     print("Initializing OCR reader...")
 
     easyreader = easyocr.Reader(lang_list=["it"])
-    paddletextrecog = (
-        None  # paddleocr.TextRecognition(model_name="latin_PP-OCRv5_mobile_rec")
-    )
+    paddletextrecog = None #paddleocr.TextRecognition(model_name="latin_PP-OCRv5_mobile_rec")
 
     print(f"Processing {len(images_to_process)} images...")
     # Process images with progress bar
-    for img_path in tqdm(images_to_process, desc="Processing images"):
+    for img_path in tqdm(images_to_process, desc="Processing images"):  # pyrefly: ignore
         try:
             # Load image
             image = load_image(img_path)
@@ -181,26 +177,26 @@ def process_images(
             tqdm.write(f"✗ Error processing {img_path.relative_to(images_dir)}: {e}")
 
 
-def create_argparser():
+def create_argparser() -> argparse.ArgumentParser:
     """Create and configure argument parser for batch processing."""
     parser = argparse.ArgumentParser(
         description="Batch process NIVO table images and extract to Excel"
     )
 
     # Input/Output arguments
-    parser.add_argument(
+    _ = parser.add_argument(
         "images_dir",
         type=Path,
         help="Directory containing input images",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "-o",
         "--output-dir",
         required=True,
         type=str,
         help="Output directory for Excel files",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "-d",
         "--debug-dir",
         type=str,
@@ -209,7 +205,7 @@ def create_argparser():
     )
 
     # Table parameters
-    parser.add_argument(
+    _ = parser.add_argument(
         "--clips",
         type=int,
         nargs=4,
@@ -217,7 +213,7 @@ def create_argparser():
         metavar=("UP", "DOWN", "LEFT", "RIGHT"),
         help="Clipping margins for table (up, down, left, right)",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "--table-shape",
         type=int,
         nargs=2,
@@ -225,7 +221,7 @@ def create_argparser():
         metavar=("WIDTH", "HEIGHT"),
         help="Expected table shape (width, height)",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "--anagrafica-file",
         required=True,
         type=str,
@@ -233,7 +229,7 @@ def create_argparser():
     )
 
     # Character shape parameters
-    parser.add_argument(
+    _ = parser.add_argument(
         "--station-char-shape",
         type=int,
         nargs=2,
@@ -241,7 +237,7 @@ def create_argparser():
         metavar=("WIDTH", "HEIGHT"),
         help="Station name character shape (default: 12 10)",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "--number-char-shape",
         type=int,
         nargs=2,
@@ -251,25 +247,25 @@ def create_argparser():
     )
 
     # Processing parameters
-    parser.add_argument(
+    _ = parser.add_argument(
         "--roi-padding",
         type=int,
         default=3,
         help="ROI padding in pixels (default: 3)",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "--nchars-threshold",
         type=int,
         default=30,
         help="Character count threshold (default: 30)",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "--extra-width",
         type=int,
         default=6,
         help="Extra width for cell ROIs (default: 6)",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "--low-confidence-threshold",
         type=float,
         default=0.7,
@@ -277,22 +273,14 @@ def create_argparser():
     )
 
     # Overwrite flag
-    parser.add_argument(
+    _ = parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing output files",
     )
 
-    parser.add_argument(
-        "--ocr",
-        choices=["easyocr", "tesseract"],
-        type=str,
-        default="easyocr",
-        help="Which OCR to use to read table values",
-    )
-
     # Image formats
-    parser.add_argument(
+    _ = parser.add_argument(
         "--image-formats",
         type=str,
         default="png,jpg,jpeg,gif",
@@ -348,12 +336,11 @@ def main():
         image_formats=image_formats,
         output_dir=args.output_dir,
         debug_dir=args.debug_dir,
-        clips=tuple(args.clips),
-        table_shape=tuple(args.table_shape),
+        clips=(args.clips[0], args.clips[1], args.clips[2], args.clips[3]),
+        table_shape=(args.table_shape[0], args.table_shape[1]),
         anagrafica=anagrafica,
-        reader=args.ocr,
-        station_char_shape=tuple(args.station_char_shape),
-        number_char_shape=tuple(args.number_char_shape),
+        station_char_shape=(args.station_char_shape[0], args.station_char_shape[1]),
+        number_char_shape=(args.number_char_shape[0], args.number_char_shape[1]),
         roi_padding=args.roi_padding,
         nchars_threshold=args.nchars_threshold,
         extra_width=args.extra_width,

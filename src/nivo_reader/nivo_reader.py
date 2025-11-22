@@ -1,6 +1,5 @@
 """Main NIVO table reader module."""
 
-from itertools import batched
 from typing import Any, Callable
 from pathlib import Path
 
@@ -8,6 +7,7 @@ import easyocr
 import numpy as np
 import paddleocr
 from cv2.typing import MatLike, Rect
+from itertools import batched
 
 from . import ocr_processing
 from .configuration.preprocessing import (
@@ -37,8 +37,6 @@ from .roi_utilities import (
     generate_roi_grid,
     pad_roi,
     resize_roi_to_largest_connected_region,
-    pad_roi,
-    resize_roi_to_largest_connected_region,
 )
 from .table_detection import (
     cut_out_tables,
@@ -64,7 +62,7 @@ def read_station_names(
     ],
     roi_padding: int,
     anagrafica: list[str],
-) -> tuple[list[str | None], list[float | None], list]:
+) -> tuple[list[str | None], list[float | None], list[Rect]]:
     """Read station names from first column.
 
     Args:
@@ -102,7 +100,7 @@ def read_station_names(
         map(lambda d: d["name"], anagrafica_closest)
     )
     anagrafica_similarities: list[float | None] = list(
-        map(lambda d: d["string_similarity"], anagrafica_closest)
+        map(lambda d: float(d["string_similarity"]), anagrafica_closest)
     )
 
     return anagrafica_names, anagrafica_similarities, ocr_name_boxes
@@ -178,7 +176,6 @@ def populate_with_reading_results(
 
 def _grouped(values: list[Any], n: int) -> list[list[Any]]:
     return list(map(list, batched(values, n)))
-
 
 def read_values(
     image: MatLike,
@@ -319,7 +316,7 @@ def read_nivo_table(
     if debug_dir:
         save_artifacts(
             {
-                "01_table_rect": draw_bounding_boxes(debug_image, [rect]),  # type: ignore
+                "01_table_rect": draw_bounding_boxes(debug_image, [rect]), # pyright: ignore[reportPossiblyUnboundVariable]
                 "02_binarized_subtable": binarized_subtable,
                 "03_binarized_subtable_wo_lines": binarized_subtable_wo_lines,
                 "04_lines": draw_straight_lines(
