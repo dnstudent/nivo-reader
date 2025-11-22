@@ -4,10 +4,9 @@ version = "0.1.0"
 description = "Libreria per l'estrazione automatica di dati da tabelle NIVO (tabelle meteorologiche storiche) da immagini scansionate"
 readme = "README.md"
 authors = [
-    { name = "dnstudent", email = "davide.nicoli@unimi.it" }
+    { name = "Davide Nicoli", email = "davide.nicoli@unimi.it" }
 ]
 requires-python = ">=3.12"
-repository = { url = "https://github.com/dnstudent/nivo-reader" }
 dependencies = [
     "easyocr>=1.7.3",
     "fancy-dataclass>=0.10.1",
@@ -26,9 +25,13 @@ dependencies = [
     "scipy>=1.16.3",
     "tqdm>=4.67.1",
 ]
+classifiers = ["Development Status :: 3 - Alpha", "Programming Language :: Python :: 3", "Intended Audience :: Science/Research"]
+
+[project.urls]
+Repository = "https://github.com/dnstudent/nivo-reader"
 
 [project.scripts]
-nivo-reader = "nivo_reader:main"
+nivo-reader = "nivo_reader.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.9.9,<0.10.0"]
