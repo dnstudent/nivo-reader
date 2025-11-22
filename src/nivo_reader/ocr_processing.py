@@ -169,7 +169,6 @@ def merge_and_filter_station_name_boxes(
         draw_bounding_boxes(
             debug_img,
             horizontally_merged_boxes,
-            boxes=True,
             color=(255, 255, 0),
             overwrite=True,
         )

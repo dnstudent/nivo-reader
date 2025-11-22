@@ -6,7 +6,7 @@ from typing import Any
 import cv2
 import openpyxl
 import openpyxl.utils
-from cv2.typing import MatLike
+from cv2.typing import MatLike, Rect
 from openpyxl.styles import Alignment, Font, PatternFill
 
 
@@ -39,8 +39,7 @@ def write_tables_to_excel(
     # Validate input
     if not (len(cell_contents) == len(confidence_values) == len(coordinates)):
         raise ValueError(
-            f"Input lists must have same length. Got: contents={len(cell_contents)}, "
-            f"confidence={len(confidence_values)}, coordinates={len(coordinates)}"
+            f"Input lists must have same length. Got: contents={len(cell_contents)}, confidence={len(confidence_values)}, coordinates={len(coordinates)}"
         )
 
     if not coordinates:
@@ -149,13 +148,12 @@ def save_artifacts(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for name, image in artifacts.items():
-        cv2.imwrite(str(output_dir / f"{name}.jpg"), image)
+        _ = cv2.imwrite(str(output_dir / f"{name}.jpg"), image)
 
 
 def draw_bounding_boxes(
     base_image: MatLike,
-    contours: list,
-    boxes: bool,
+    contours: list[Rect],
     color: tuple[int, int, int] = (0, 255, 0),
     thickness: int = 5,
     width_factor: float = 0.0,
@@ -184,28 +182,24 @@ def draw_bounding_boxes(
         base_image = cv2.cvtColor(base_image, cv2.COLOR_GRAY2RGB)
 
     for contour in contours:
-        if contour is not None and len(contour) > 0:
-            if boxes:
-                x, y, w, h = contour
-            else:
-                x, y, w, h = cv2.boundingRect(contour)
+        x, y, w, h = contour
 
-            # Adjust bounding box dimensions
-            x += int(w * width_factor)
-            y -= int(h * height_factor)
-            w -= int(w * width_factor)
-            h += int(h * height_factor * 2)
+        # Adjust bounding box dimensions
+        x += int(w * width_factor)
+        y -= int(h * height_factor)
+        w -= int(w * width_factor)
+        h += int(h * height_factor * 2)
 
-            cv2.rectangle(
-                base_image, (x, y), (x + w, y + h), color, thickness, **kwargs
-            )
+        _ = cv2.rectangle(
+            base_image, (x, y), (x + w, y + h), color, thickness, **kwargs
+        )
 
     return base_image
 
 
 def draw_straight_lines(
     base_image: MatLike,
-    line_offsets: list,
+    line_offsets: list[int],
     orientation: str,
     color: tuple[int, int, int] = (255, 0, 0),
     thickness: int = 1,
@@ -235,5 +229,5 @@ def draw_straight_lines(
             pt2 = (line_offset, overlay.shape[0])
         else:
             raise ValueError(f"Invalid orientation: {orientation}")
-        cv2.line(overlay, pt1, pt2, color, thickness, **kwargs)
+        _ = cv2.line(overlay, pt1, pt2, color, thickness, **kwargs)
     return overlay

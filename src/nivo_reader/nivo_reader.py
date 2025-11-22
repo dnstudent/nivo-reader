@@ -248,7 +248,7 @@ def read_nivo_table(
     if debug_dir:
         save_artifacts(
             {
-                "01_table_rect": draw_bounding_boxes(debug_image, [rect], boxes=True),  # type: ignore
+                "01_table_rect": draw_bounding_boxes(debug_image, [rect]),  # type: ignore
                 "02_binarized_subtable": binarized_subtable,
                 "03_binarized_subtable_wo_lines": binarized_subtable_wo_lines,
                 "04_lines": draw_straight_lines(
@@ -277,7 +277,7 @@ def read_nivo_table(
         save_artifacts(
             {
                 "05_station_names_bboxes": draw_bounding_boxes(
-                    binarized_subtable_wo_lines, ocr_name_boxes, boxes=True
+                    binarized_subtable_wo_lines, ocr_name_boxes
                 )
             },
             debug_dir,
@@ -301,7 +301,6 @@ def read_nivo_table(
                     draw_bounding_boxes(
                         binarized_subtable_wo_lines,
                         ocr_value_boxes,
-                        boxes=True,
                         thickness=1,
                     ),
                     rows_centers,
