@@ -2,7 +2,8 @@
 
 from itertools import takewhile, pairwise
 from string import ascii_letters
-from typing import Sequence
+import logging
+from typing import Any, Sequence
 
 import cv2
 import easyocr
@@ -21,6 +22,8 @@ from .image_processing import extract_contours_boxes
 from .roi_utilities import easyrect2rect, extract, rect2easy
 from .table_detection import create_word_blobs
 from .excel_output import draw_bounding_boxes
+
+logger = logging.getLogger(__name__)
 
 
 def filter_by_size(
@@ -123,18 +126,7 @@ def merge_same_line_boxes(boxes: list[Rect], line_height: int) -> list[Rect]:
     return merged_boxes
 
 
-def row_indexer(row_height: int, rows: list[int]):
-    rows = np.array(rows)
 
-    def _indexer(box: Rect):
-        distances = np.abs(rows - box_y_center(box))
-        return (
-            np.argmin(distances[distances < row_height / 2])
-            if len(distances) > 0
-            else None
-        )
-
-    return _indexer
 
 
 def merge_and_filter_station_name_boxes(
@@ -209,6 +201,9 @@ def merge_and_filter_station_name_boxes(
                     to_merge_name_box_is[-1] : matching_name_box_i + 1
                 ]
             )
+            if not merged_box:
+                logger.error("Merged box is None")
+                merged_box = horizontally_merged_boxes[matching_name_box_i]
         else:
             merged_box = horizontally_merged_boxes[matching_name_box_i]
         last_matched_box_i = matching_name_box_i

@@ -1,6 +1,7 @@
 """Main NIVO table reader module."""
 
-from typing import Callable
+from itertools import batched
+from typing import Any, Callable
 from pathlib import Path
 
 import easyocr
@@ -36,7 +37,8 @@ from .roi_utilities import (
     generate_roi_grid,
     pad_roi,
     resize_roi_to_largest_connected_region,
-    roi_grid_coordinates,
+    pad_roi,
+    resize_roi_to_largest_connected_region,
 )
 from .table_detection import (
     cut_out_tables,
@@ -122,6 +124,62 @@ def prepare_value_roi(
     return pad_roi(largest_region, padding)
 
 
+def populate_with_reading_results(
+    results: tuple[list[str | None], list[float | None], list[Rect]],
+    reader: Callable[
+        [MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]
+    ],
+    image: MatLike,
+    rois: list[Rect],
+    threshold: float,
+) -> None:
+    """Fill results with OCR readings, only when confidence is above threshold.
+
+    Filters out ROIs that already have satisfying results to avoid unnecessary
+    OCR processing. Results are placed in their proper positions.
+
+    Args:
+        results: Tuple of (readings, confidences, boxes) lists to populate
+        reader: OCR reader callable that takes (image, rois) and returns
+            (readings, confidences, boxes)
+        image: Image to process
+        rois: List of ROI rectangles
+        threshold: Confidence threshold - only results above this are kept
+    """
+    # Filter ROIs that don't already have satisfying results
+    # Keep track of original indices to map results back correctly
+    filtered_rois: list[Rect] = []
+    original_indices: list[int] = []
+
+    for i, roi in enumerate(rois):
+        if results[0][i] is None:  # Only process ROIs that don't have results yet
+            filtered_rois.append(roi)
+            original_indices.append(i)
+
+    # If all ROIs already have results, skip OCR processing
+    if not filtered_rois:
+        return
+
+    # Call reader with only the filtered ROIs
+    readings, confidences, boxes = reader(image, filtered_rois)
+
+    # Map results back to their original positions
+    for filtered_idx, original_idx in enumerate(original_indices):
+        reading = readings[filtered_idx]
+        confidence = confidences[filtered_idx]
+        box = boxes[filtered_idx]
+
+        # Only fill in results if confidence is above threshold
+        if confidence is not None and confidence > threshold:
+            if results[0][original_idx] is None:  # Double-check it's still None
+                results[0][original_idx] = reading
+                results[1][original_idx] = confidence
+                results[2][original_idx] = box
+
+def _grouped(values: list[Any], n: int) -> list[list[Any]]:
+    return list(map(list, batched(values, n)))
+
+
 def read_values(
     image: MatLike,
     rows_centers: list[int],
@@ -133,27 +191,34 @@ def read_values(
             tuple[list[str | None], list[float | None], list[Rect]],
         ]
     ],
+    confidence_thresholds: list[float],
     roi_padding: int,
     extra_width: int,
-) -> tuple[list[str | None], list[float | None], list[Rect]]:
+) -> tuple[list[list[str | None]], list[list[float | None]], list[list[Rect]]]:
     """Read values from table cells.
 
     Args:
         image: Table image
         rows_centers: Row center positions
         column_separators: Column x-coordinates
-        number_char_height: Character height
-        reader: OCR reader callable
+        number_char_shape: Character (width, height)
+        readers: List of OCR reader callables
+        confidence_thresholds: List of confidence thresholds
         roi_padding: Padding around ROIs
         extra_width: Extra width padding
 
     Returns:
-        tuple of (values, confidences, boxes)
+        tuple of (values, confidences, boxes) as 2D lists [col][row]
     """
-    rois = generate_roi_grid(
+    rois_grid = generate_roi_grid(
         rows_centers, column_separators[1:], number_char_shape[1], extra_width
     )
-    rois = list(
+    n_rows = len(rows_centers)
+
+    # Flatten for processing
+    rois_flat = [roi for col in rois_grid for roi in col]
+
+    rois_flat = list(
         map(
             lambda roi: prepare_value_roi(
                 roi,
@@ -162,16 +227,22 @@ def read_values(
                 WordBlobsCreationParameters(gap_iterations=2, simple_iterations=0),
                 roi_padding,
             ),
-            [roi for crois in rois for roi in crois],
+            rois_flat,
         )
     )
-    results = ([], [], [])
-    for reader in readers:
-        rresults = reader(image, rois)
-        results[0].extend(rresults[0])
-        results[1].extend(rresults[1])
-        results[2].extend(rresults[2])
-    return results
+
+    results_flat: tuple[list[str | None], list[float | None], list[Rect]] = (
+        [None] * len(rois_flat),
+        [None] * len(rois_flat),
+        rois_flat,
+    )
+
+    while readers:
+        reader = readers.pop(0)
+        threshold = confidence_thresholds.pop(0)
+        populate_with_reading_results(results_flat, reader, image, rois_flat, threshold)
+
+    return _grouped(results_flat[0], n_rows), _grouped(results_flat[1], n_rows), _grouped(results_flat[2], n_rows)
 
 
 def read_nivo_table(
@@ -284,15 +355,21 @@ def read_nivo_table(
         )
 
     # Read values
-    ocr_values, values_confidences, ocr_value_boxes = read_values(
+    ocr_values_2d, values_confidences_2d, ocr_value_boxes_2d = read_values(
         binarized_subtable_wo_lines,
         rows_centers,
         cols_separators,
         number_char_shape,
         [value_readers["easyocr"](easyreader)],
+        [0.0],
         roi_padding,
         extra_width,
     )
+
+    # Flatten results for Excel output and debug
+    ocr_values = [val for col in ocr_values_2d for val in col]
+    values_confidences = [conf for col in values_confidences_2d for conf in col]
+    ocr_value_boxes = [box for col in ocr_value_boxes_2d for box in col]
 
     if debug_dir:
         save_artifacts(
@@ -311,9 +388,10 @@ def read_nivo_table(
         )
 
     # Assign grid coordinates
-    values_coordinates = roi_grid_coordinates(
-        ocr_value_boxes, n_rows=len(rows_centers), n_cols=len(cols_separators) - 2
-    )
+    values_coordinates: list[tuple[int, int]] = []
+    for c_idx, col in enumerate(ocr_values_2d):
+        for r_idx, _ in enumerate(col):
+            values_coordinates.append((r_idx, c_idx))
 
     # Write to Excel
     write_tables_to_excel(
