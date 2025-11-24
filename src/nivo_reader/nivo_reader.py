@@ -5,7 +5,6 @@ from pathlib import Path
 
 import easyocr
 import numpy as np
-import paddleocr
 from cv2.typing import MatLike, Rect
 from itertools import batched
 
@@ -48,7 +47,7 @@ from .table_detection import (
 
 value_readers = {
     reader: getattr(ocr_processing, f"{reader}_values_reader")
-    for reader in ["tesseract", "easyocr", "paddleocr"]
+    for reader in ["tesseract", "easyocr"]
 }
 
 
@@ -249,7 +248,6 @@ def read_nivo_table(
     table_shape: tuple[int, int],
     anagrafica: list[str],
     easyreader: easyocr.Reader,
-    paddletextrecog: paddleocr.TextRecognition,
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,

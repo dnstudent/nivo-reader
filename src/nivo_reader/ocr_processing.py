@@ -5,10 +5,8 @@ from string import ascii_letters
 import logging
 from typing import Any
 
-import cv2
 import easyocr
 import numpy as np
-import paddleocr
 import polars as pl
 import polars_distance as pld  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import pytesseract
@@ -421,29 +419,28 @@ def easyocr_values_reader(ocr: easyocr.Reader):
     return _reader
 
 
-def paddleocr_values_reader(ocr: paddleocr.TextRecognition):
-    def _reader(
-        image: MatLike, rois: list[Rect]
-    ) -> tuple[list[str | None], list[float | None], list[Rect]]:
-        if image.ndim == 2:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-        crops = list(
-            map(
-                lambda roi: extract(
-                    image,
-                    roi,
-                ),
-                rois,
-            )
-        )
-        raw_results: list[dict[str, Any]] = ocr.predict(input=crops, batch_size=8)  # pyright: ignore[reportUnknownMemberType]
-        return (
-            [r.get("rec_text") for r in raw_results],
-            [r.get("rec_score") for r in raw_results],
-            rois,
-        )
-
-    return _reader
+# def paddleocr_values_reader(ocr: paddleocr.TextRecognition):
+#     def _reader(
+#         image: MatLike, rois: list[Rect]
+#     ) -> tuple[list[str | None], list[float | None], list[Rect]]:
+#         if image.ndim == 2:
+#             image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+#         crops = list(
+#             map(
+#                 lambda roi: extract(
+#                     image,
+#                     roi,
+#                 ),
+#                 rois,
+#             )
+#         )
+#         raw_results: list[dict[str, Any]] = ocr.predict(input=crops, batch_size=8)  # pyright: ignore[reportUnknownMemberType]
+#         return (
+#             [r.get("rec_text") for r in raw_results],
+#             [r.get("rec_score") for r in raw_results],
+#             rois,
+#         )
+#     return _reader
 
 
 def process_tesseract_cell_result(result: dict[str, Any], roi: Rect) -> dict[str, Any]:

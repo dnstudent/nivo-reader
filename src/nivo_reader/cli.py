@@ -8,7 +8,6 @@ import logging
 
 import easyocr
 import numpy as np
-import paddleocr
 import polars as pl
 from PIL import Image
 from tqdm import tqdm
@@ -158,7 +157,6 @@ def process_images(
                 table_shape,
                 anagrafica,
                 easyreader,
-                paddletextrecog,
                 station_char_shape,
                 number_char_shape,
                 roi_padding,

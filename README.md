@@ -3,21 +3,28 @@
 Il pacchetto può essere installato usando `uv` direttamente dal repository GitHub:
 
 ```bash
-uv pip install git+https://github.com/dnstudent/nivo-reader.git
+uv pip git+https://github.com/dnstudent/nivo-reader.git
+```
+
+oppure con `pip`:
+
+```bash
+pip install git+https://github.com/dnstudent/EasyOCR git+https://github.com/dnstudent/nivo-reader.git
 ```
 
 Oppure, se si desidera installare in modalità sviluppo:
 
 ```bash
+pip install git+https://github.com/dnstudent/EasyOCR
 git clone https://github.com/dnstudent/nivo-reader.git
 cd nivo-reader
-uv pip install -e .
+pip install -e .
 ```
 
 ## Utilizzo
 
 ```bash
-python process_nivo_images.py \
+nivo-reader \
   folder/ \
   --output-dir ./output \
   --debug-dir ./debug \
