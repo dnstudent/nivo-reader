@@ -1,12 +1,10 @@
 """Main NIVO table reader module."""
 
-from typing import Any, Callable
 from pathlib import Path
 
 import easyocr
-import numpy as np
-from cv2.typing import MatLike, Rect
-from itertools import batched
+from cv2.typing import MatLike
+
 
 from . import ocr_processing
 from .configuration.preprocessing import (
@@ -15,7 +13,6 @@ from .configuration.preprocessing import (
 )
 from .configuration.table_and_cell_detection import (
     LinesExtractionParameters,
-    WordBlobsCreationParameters,
 )
 from .excel_output import (
     draw_bounding_boxes,
@@ -25,17 +22,9 @@ from .excel_output import (
 )
 from .image_processing import preproc
 from .ocr_processing import (
-    associate_closest_station_names,
-    compute_name_rows,
-    detect_station_boxes,
     easyocr_names_reader,
-)
-from .roi_utilities import (
-    autocrop_roi,
-    expand_roi_atleast,
-    generate_roi_grid,
-    pad_roi,
-    resize_roi_to_largest_connected_region,
+    read_station_names,
+    read_values,
 )
 from .table_detection import (
     cut_out_tables,
@@ -49,196 +38,6 @@ value_readers = {
     reader: getattr(ocr_processing, f"{reader}_values_reader")
     for reader in ["tesseract", "easyocr"]
 }
-
-
-def read_station_names(
-    image: MatLike,
-    rows_centers: list[int],
-    column_separators: list[int],
-    char_shape: tuple[int, int],
-    reader: Callable[
-        [MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]
-    ],
-    roi_padding: int,
-    anagrafica: list[str],
-) -> tuple[list[str | None], list[float | None], list[Rect]]:
-    """Read station names from first column.
-
-    Args:
-        image: Table image
-        rows_centers: Row center positions
-        column_separators: Column x-coordinates
-        char_shape: Character (width, height)
-        reader: OCR reader callable
-        roi_padding: Padding around ROIs
-        anagrafica: Known station names
-
-    Returns:
-        tuple of (names, similarities, boxes)
-    """
-    first_column = image[:, column_separators[0] : column_separators[1]]
-    names_wboxes = list(
-        map(
-            lambda box: pad_roi(autocrop_roi(box, image), roi_padding),
-            detect_station_boxes(first_column, char_shape, rows_centers),
-        )
-    )
-
-    names_wboxes = sorted(names_wboxes, key=lambda b: b[1])
-    ocr_names, names_confidences, ocr_name_boxes = reader(image, names_wboxes)
-
-    names_rows = compute_name_rows(ocr_name_boxes)
-    ocr_names: list[str | None] = np.array(ocr_names)[names_rows].tolist()
-    names_confidences: list[float | None] = np.array(names_confidences)[
-        names_rows
-    ].tolist()
-    ocr_name_boxes: list[Rect] = np.array(ocr_name_boxes)[names_rows].tolist()
-
-    anagrafica_closest = associate_closest_station_names(ocr_names, anagrafica)
-    anagrafica_names: list[str | None] = list(
-        map(lambda d: d["name"], anagrafica_closest)
-    )
-    anagrafica_similarities: list[float | None] = list(
-        map(lambda d: float(d["string_similarity"]), anagrafica_closest)
-    )
-
-    return anagrafica_names, anagrafica_similarities, ocr_name_boxes
-
-
-def prepare_value_roi(
-    roi: Rect,
-    image: MatLike,
-    character_shape: tuple[int, int],
-    parameters: WordBlobsCreationParameters,
-    padding: int,
-):
-    largest_region = resize_roi_to_largest_connected_region(roi, image, parameters)
-    if largest_region is None:
-        largest_region = roi
-    largest_region = autocrop_roi(largest_region, image)
-    largest_region = expand_roi_atleast(largest_region, character_shape)
-
-    return pad_roi(largest_region, padding)
-
-
-def populate_with_reading_results(
-    results: tuple[list[str | None], list[float | None], list[Rect]],
-    reader: Callable[
-        [MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]
-    ],
-    image: MatLike,
-    rois: list[Rect],
-    threshold: float,
-) -> None:
-    """Fill results with OCR readings, only when confidence is above threshold.
-
-    Filters out ROIs that already have satisfying results to avoid unnecessary
-    OCR processing. Results are placed in their proper positions.
-
-    Args:
-        results: Tuple of (readings, confidences, boxes) lists to populate
-        reader: OCR reader callable that takes (image, rois) and returns
-            (readings, confidences, boxes)
-        image: Image to process
-        rois: List of ROI rectangles
-        threshold: Confidence threshold - only results above this are kept
-    """
-    # Filter ROIs that don't already have satisfying results
-    # Keep track of original indices to map results back correctly
-    filtered_rois: list[Rect] = []
-    original_indices: list[int] = []
-
-    for i, roi in enumerate(rois):
-        if results[0][i] is None:  # Only process ROIs that don't have results yet
-            filtered_rois.append(roi)
-            original_indices.append(i)
-
-    # If all ROIs already have results, skip OCR processing
-    if not filtered_rois:
-        return
-
-    # Call reader with only the filtered ROIs
-    readings, confidences, boxes = reader(image, filtered_rois)
-
-    # Map results back to their original positions
-    for filtered_idx, original_idx in enumerate(original_indices):
-        reading = readings[filtered_idx]
-        confidence = confidences[filtered_idx]
-        box = boxes[filtered_idx]
-
-        # Only fill in results if confidence is above threshold
-        if confidence is not None and confidence > threshold:
-            if results[0][original_idx] is None:  # Double-check it's still None
-                results[0][original_idx] = reading
-                results[1][original_idx] = confidence
-                results[2][original_idx] = box
-
-def _grouped(values: list[Any], n: int) -> list[list[Any]]:
-    return list(map(list, batched(values, n)))
-
-def read_values(
-    image: MatLike,
-    rows_centers: list[int],
-    column_separators: list[int],
-    number_char_shape: tuple[int, int],
-    readers: list[
-        Callable[
-            [MatLike, list[Rect]],
-            tuple[list[str | None], list[float | None], list[Rect]],
-        ]
-    ],
-    confidence_thresholds: list[float],
-    roi_padding: int,
-    extra_width: int,
-) -> tuple[list[list[str | None]], list[list[float | None]], list[list[Rect]]]:
-    """Read values from table cells.
-
-    Args:
-        image: Table image
-        rows_centers: Row center positions
-        column_separators: Column x-coordinates
-        number_char_shape: Character (width, height)
-        readers: List of OCR reader callables
-        confidence_thresholds: List of confidence thresholds
-        roi_padding: Padding around ROIs
-        extra_width: Extra width padding
-
-    Returns:
-        tuple of (values, confidences, boxes) as 2D lists [col][row]
-    """
-    rois_grid = generate_roi_grid(
-        rows_centers, column_separators[1:], number_char_shape[1], extra_width
-    )
-    n_rows = len(rows_centers)
-
-    # Flatten for processing
-    rois_flat = [roi for col in rois_grid for roi in col]
-
-    rois_flat = list(
-        map(
-            lambda roi: prepare_value_roi(
-                roi,
-                image,
-                number_char_shape,
-                WordBlobsCreationParameters(gap_iterations=2, simple_iterations=0),
-                roi_padding,
-            ),
-            rois_flat,
-        )
-    )
-
-    results_flat: tuple[list[str | None], list[float | None], list[Rect]] = (
-        [None] * len(rois_flat),
-        [None] * len(rois_flat),
-        rois_flat,
-    )
-
-    while readers:
-        reader = readers.pop(0)
-        threshold = confidence_thresholds.pop(0)
-        populate_with_reading_results(results_flat, reader, image, rois_flat, threshold)
-
-    return _grouped(results_flat[0], n_rows), _grouped(results_flat[1], n_rows), _grouped(results_flat[2], n_rows)
 
 
 def read_nivo_table(
@@ -256,25 +55,42 @@ def read_nivo_table(
     low_confidence_threshold: float = 0.7,
     debug_dir: Path | None = None,
 ) -> None:
-    """Extract NIVO table data from image and write to Excel.
+    """
+    Extract NIVO table data from image and write to Excel.
 
-    Args:
-        original_image: Input image
-        excel_out_path: Output Excel file path
-        ocr: Initialized EasyOCR reader
-        clips: (up, down, left, right) clipping margins
-        table_shape: (width, height) of table
-        anagrafica: list of known station names
-        station_char_shape: Character (width, height) for station names
-        number_char_shape: Character (width, height) for numbers
-        roi_padding: Padding around ROIs in pixels
-        nchars_threshold: Minimum character count for peak detection
-        extra_width: Extra width for cell ROIs
-        low_confidence_threshold: Confidence threshold for marking cells
-        debug_dir: Directory for debug artifacts (optional)
+    Parameters
+    ----------
+    original_image : MatLike
+        The input image containing the table.
+    excel_out_path : Path | str
+        The path where the output Excel file will be saved.
+    clips : tuple[int, int, int, int]
+        Clipping margins (up, down, left, right) to apply to the table region.
+    table_shape : tuple[int, int]
+        The expected (width, height) of the table in the image.
+    anagrafica : list[str]
+        A list of known station names used for matching and validation.
+    easyreader : easyocr.Reader
+        An initialized EasyOCR reader instance.
+    station_char_shape : tuple[int, int], optional
+        The approximate shape (width, height) of characters in station names. Default is (12, 10).
+    number_char_shape : tuple[int, int], optional
+        The approximate shape (width, height) of number characters in the table. Default is (12, 20).
+    roi_padding : int, optional
+        The padding defined in pixels to add around each region of interest. Default is 3.
+    nchars_threshold : int, optional
+        The minimum number of characters required to detect a row or column. Default is 30.
+    extra_width : int, optional
+        Extra width to add to cell ROIs. Default is 6.
+    low_confidence_threshold : float, optional
+        The confidence threshold below which a cell reading is considered low confidence. Default is 0.7.
+    debug_dir : Path | None, optional
+        Directory where debug artifacts (images, intermediate steps) will be saved. If None, no debug artifacts are saved.
 
-    Raises:
-        Exception: If table cannot be detected
+    Raises
+    ------
+    ValueError
+        If the table rectangle cannot be detected in the image.
     """
     if debug_dir:
         debug_dir = Path(debug_dir)
@@ -314,7 +130,7 @@ def read_nivo_table(
     if debug_dir:
         save_artifacts(
             {
-                "01_table_rect": draw_bounding_boxes(debug_image, [rect]), # pyright: ignore[reportPossiblyUnboundVariable]
+                "01_table_rect": draw_bounding_boxes(debug_image, [rect]),  # pyright: ignore[reportPossiblyUnboundVariable]
                 "02_binarized_subtable": binarized_subtable,
                 "03_binarized_subtable_wo_lines": binarized_subtable_wo_lines,
                 "04_lines": draw_straight_lines(

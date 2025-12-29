@@ -2,34 +2,39 @@
 Parts of the code are taken from MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors.
 """
 
-from typing import Literal
-
 import cv2
 import numpy as np
 from cv2.typing import MatLike, Rect
-from numpy.typing import NDArray
 from scipy.signal import find_peaks
 
 from .configuration.preprocessing import (
     ThresholdParameters,
+    LinesDetectionParameters,
 )
 from .configuration.table_and_cell_detection import (
-    LinesDetectionParameters,
     LinesExtractionParameters,
+    WordBlobsCreationParameters,
 )
 from .image_processing import ms_threshold, detect_lines, combine_lines
 
 
 def ok_side(x: int, expected_x: int, tol: float) -> bool:
-    """Check if dimension is within tolerance of expected value.
+    """
+    Check if dimension is within tolerance of expected value.
 
-    Args:
-        x: Actual dimension
-        expected_x: Expected dimension
-        tol: Tolerance as fraction (default 0.1 = 10%)
+    Parameters
+    ----------
+    x : int
+        Actual dimension.
+    expected_x : int
+        Expected dimension.
+    tol : float, optional
+        Tolerance as fraction (default 0.1 = 10% is hardcoded in usage).
 
-    Returns:
-        True if within tolerance
+    Returns
+    -------
+    bool
+        True if within tolerance.
     """
     return (1 - tol) <= (x / expected_x) <= (1 + tol)
 
@@ -39,22 +44,28 @@ def try_detect_table_rect(
     expected_table_shape: tuple[int, int],
     threshold_parameters: ThresholdParameters,
 ) -> Rect | None:
-    """Detect table rectangle in image.
+    """
+    Detect table rectangle in image.
 
-    Args:
-        gray_image: Grayscale image
-        expected_table_width: Expected table width
-        expected_table_height: Expected table height
-        threshold_parameters: Threshold configuration
+    Parameters
+    ----------
+    gray_image : MatLike
+        Grayscale image.
+    expected_table_shape : tuple[int, int]
+        Expected table (width, height).
+    threshold_parameters : ThresholdParameters
+        Threshold configuration.
 
-    Returns:
-        Bounding rectangle of table or None if not found
+    Returns
+    -------
+    Rect | None
+        Bounding rectangle of table or None if not found.
     """
     thresh = ms_threshold(gray_image, threshold_parameters)
     expected_table_width, expected_table_height = expected_table_shape
     bboxes = sorted(
         filter(
-            # TODO: tol are fixed
+            # TODO: explain tol are fixed, why hardcoded?
             lambda r: ok_side(r[2], expected_table_width, tol=0.1)
             and ok_side(r[3], expected_table_height, tol=0.1),
             map(
@@ -74,15 +85,22 @@ def try_detect_table_rect(
 def cut_out_tables(
     image: MatLike, table_rect: Rect, clip_specs: tuple[int, int, int, int]
 ) -> tuple[MatLike, MatLike]:
-    """Cut out table region from image with optional clipping.
+    """
+    Cut out table region from image with optional clipping.
 
-    Args:
-        image: Input image
-        table_rect: Rectangle defining table bounds
-        clip_specs: (up, down, left, right) pixels to clip from table
+    Parameters
+    ----------
+    image : MatLike
+        Input image.
+    table_rect : Rect
+        Rectangle defining table bounds.
+    clip_specs : tuple[int, int, int, int]
+        (up, down, left, right) pixels to clip from table.
 
-    Returns:
-        tuple of (full_table, clipped_table)
+    Returns
+    -------
+    tuple[MatLike, MatLike]
+        Tuple of (full_table, clipped_table).
     """
     clip_up, clip_down, clip_left, clip_right = clip_specs
     x, y, w, h = table_rect
@@ -97,16 +115,24 @@ def extract_table_lines(
     table_height: int | None,
     parameters: LinesExtractionParameters,
 ) -> MatLike:
-    """Extract all table lines (horizontal and vertical).
+    """
+    Extract all table lines (horizontal and vertical).
 
-    Args:
-        img_bin: Binary image
-        table_width: Table width
-        table_height: Table height
-        parameters: Line extraction configuration
+    Parameters
+    ----------
+    img_bin : MatLike
+        Binary image.
+    table_width : int | None
+        Table width.
+    table_height : int | None
+        Table height.
+    parameters : LinesExtractionParameters
+        Line extraction configuration.
 
-    Returns:
-        Image with all table lines
+    Returns
+    -------
+    MatLike
+        Image with all table lines.
     """
     vertical_lines = detect_lines(
         img_bin,
@@ -133,16 +159,24 @@ def remove_lines_from_image(
     table_width: int | None = None,
     table_height: int | None = None,
 ) -> MatLike:
-    """Remove table lines from image.
+    """
+    Remove table lines from image.
 
-    Args:
-        img_bin: Binary image
-        parameters: Line extraction configuration
-        table_width: Table width (optional)
-        table_height: Table height (optional)
+    Parameters
+    ----------
+    img_bin : MatLike
+        Binary image.
+    parameters : LinesExtractionParameters
+        Line extraction configuration.
+    table_width : int | None, optional
+        Table width.
+    table_height : int | None, optional
+        Table height.
 
-    Returns:
-        Image with lines removed
+    Returns
+    -------
+    MatLike
+        Image with lines removed.
     """
     table_lines = extract_table_lines(img_bin, table_width, table_height, parameters)
     image_wo_lines = cv2.subtract(img_bin, table_lines)
@@ -151,15 +185,23 @@ def remove_lines_from_image(
     return cv2.dilate(image_cleaned, kernel, iterations=1)
 
 
-def create_word_blobs(image_cleaned: MatLike, parameters) -> MatLike:
-    """Convert words to blobs through dilation.
+def create_word_blobs(
+    image_cleaned: MatLike, parameters: WordBlobsCreationParameters
+) -> MatLike:
+    """
+    Convert words to blobs through dilation.
 
-    Args:
-        image_cleaned: Cleaned image
-        parameters: Word blob creation configuration
+    Parameters
+    ----------
+    image_cleaned : MatLike
+        Cleaned image.
+    parameters : WordBlobsCreationParameters
+        Word blob creation configuration.
 
-    Returns:
-        Image with word blobs
+    Returns
+    -------
+    MatLike
+        Image with word blobs.
     """
     gap_kernel = cv2.getStructuringElement(
         parameters.gap_kernel_type, parameters.gap_kernel_shape
@@ -178,14 +220,20 @@ def create_word_blobs(image_cleaned: MatLike, parameters) -> MatLike:
 
 
 def detect_column_separators(table_img: MatLike, char_width: int) -> list[int]:
-    """Detect vertical column separator positions.
+    """
+    Detect vertical column separator positions.
 
-    Args:
-        table_img: Table image
-        char_width: Character width for distance estimation
+    Parameters
+    ----------
+    table_img : MatLike
+        Table image.
+    char_width : int
+        Character width for distance estimation.
 
-    Returns:
-        Array of column x-coordinates
+    Returns
+    -------
+    list[int]
+        List of column x-coordinates.
     """
     vertical_lines = detect_lines(
         table_img,
@@ -193,7 +241,7 @@ def detect_column_separators(table_img: MatLike, char_width: int) -> list[int]:
         LinesDetectionParameters(20),
         kind="vertical",
     )
-    peaks = list(
+    peaks: list[int] = list(
         find_peaks(
             vertical_lines.sum(axis=0),
             height=table_img.shape[1] * 0.7,
@@ -210,19 +258,28 @@ def detect_rows_positions(
     nchars_threshold: int,
     number_char_shape: tuple[int, int],
 ) -> np.ndarray:
-    """Detect horizontal row positions.
+    """
+    Detect horizontal row positions.
 
-    Args:
-        binarized_table_wo_lines: Binary image without lines
-        nchars_threshold: Minimum number of characters for peak detection
-        number_char_shape: (width, height) of character
+    Parameters
+    ----------
+    binarized_table_wo_lines : MatLike
+        Binary image without lines.
+    nchars_threshold : int
+        Minimum number of characters for peak detection.
+    number_char_shape : tuple[int, int]
+        (width, height) of character.
 
-    Returns:
-        Array of row y-coordinates
+    Returns
+    -------
+    np.ndarray
+        Array of row y-coordinates.
     """
     is_white = binarized_table_wo_lines / 255
     n_chars = is_white.sum(axis=1) / number_char_shape[0]
     rows_centers, _ = find_peaks(
-        n_chars, height=nchars_threshold, distance=number_char_shape[1] * 0.8
+        n_chars,
+        height=nchars_threshold,
+        distance=number_char_shape[1] * 0.8,  # TODO: explain 0.8 factor
     )
     return rows_centers

@@ -4,7 +4,7 @@ from typing import Literal
 import logging
 
 import cv2
-from cv2.typing import MatLike
+from cv2.typing import MatLike, Rect
 import numpy as np
 from img2table.document.base.rotation import fix_rotation_image
 from img2table.document.base.rotation import (
@@ -134,7 +134,7 @@ def img2table_lines_angle(img: np.ndarray) -> float:
 
     # Check number of centroids
     if len(cc_centroids) < 2:
-        return img, False
+        return 0.0
 
     # Compute most likely angles from connected components
     angles = get_relevant_angles(centroids=cc_centroids, ref_height=ref_height)
@@ -179,24 +179,28 @@ def deskew_nivo(wb_table_image: MatLike, *oth_images: *tuple[MatLike, ...]):
     # Rotate the image to deskew
     (h, w) = wb_table_image.shape[:2]
     center = (h // 2, w // 2)
-    M = cv2.getRotationMatrix2D(center, 90 - lines_median_angle, 1.0)
+    rotation_matrix = cv2.getRotationMatrix2D(center, 90 - lines_median_angle, 1.0)
     wb_rotated = cv2.warpAffine(
         wb_table_image,
-        M,
-        (w, h),
+        rotation_matrix,
+        dsize=[w, h],
         flags=cv2.INTER_CUBIC,
         borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0,
+        borderValue=[0],
     )
 
-    oth_rotated = []
+    oth_rotated: list[MatLike] = []
     for image in oth_images:
         (h, w) = image.shape[:2]
         center = (h // 2, w // 2)
-        M = cv2.getRotationMatrix2D(center, 90 - lines_median_angle, 1.0)
+        rotation_matrix = cv2.getRotationMatrix2D(center, 90 - lines_median_angle, 1.0)
         oth_rotated.append(
             cv2.warpAffine(
-                image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+                image,
+                rotation_matrix,
+                (w, h),
+                flags=cv2.INTER_CUBIC,
+                borderMode=cv2.BORDER_REPLICATE,
             )
         )
 
@@ -293,13 +297,15 @@ def preproc(
     Returns:
         tuple of (original, threshold, binarized, table_struct) images
     """
-    # Fix rotation
+    # Fix rotation. By default and as a starting point use the img2table method
     image = fix_rotation_image(image)[0]
+    # If using the custom nivo method, deskew the image and compare results
     if deskew_method == "nivo":
         image_in_grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         thresh = ms_threshold(
             image_in_grayscale, preprocessing_parameters.threshold_parameters
         )
+        # Check if deskewing improved the result, i.e. if the angle is closer to 90 degrees after deskewing
         angle_before = nivo_lines_angle(
             thresh, "vertical", LinesDetectionParameters(20, dilation_iterations=1)
         )
@@ -307,12 +313,12 @@ def preproc(
         angle_after = nivo_lines_angle(
             thresh, "vertical", LinesDetectionParameters(20, dilation_iterations=1)
         )
-        if abs(90 - angle_before) > abs(90 - angle_after):
+        if angle_after is not None and (
+            angle_before is None or abs(90 - angle_before) > abs(90 - angle_after)
+        ):
             image = nivo_image
-    elif deskew_method == "img2table":
-        pass
-    else:
-        raise NotImplementedError
+    elif deskew_method != "img2table":
+        raise ValueError(f"Invalid deskew method: {deskew_method}")  # pyright: ignore[reportUnreachable]
 
     image_in_grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     # Convert to grayscale
@@ -335,7 +341,7 @@ def preproc(
     )
 
 
-def extract_contours_boxes(image: MatLike) -> list:
+def extract_contours_boxes(image: MatLike) -> list[Rect]:
     """Extract bounding boxes from contours in the image.
 
     Args:

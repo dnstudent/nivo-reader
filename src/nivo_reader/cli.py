@@ -132,11 +132,13 @@ def process_images(
     print("Initializing OCR reader...")
 
     easyreader = easyocr.Reader(lang_list=["it"])
-    paddletextrecog = None #paddleocr.TextRecognition(model_name="latin_PP-OCRv5_mobile_rec")
+    # paddletextrecog = None #paddleocr.TextRecognition(model_name="latin_PP-OCRv5_mobile_rec")
 
     print(f"Processing {len(images_to_process)} images...")
     # Process images with progress bar
-    for img_path in tqdm(images_to_process, desc="Processing images"):  # pyrefly: ignore
+    for img_path in tqdm(
+        images_to_process, desc="Processing images"
+    ):  # pyrefly: ignore
         try:
             # Load image
             image = load_image(img_path)

@@ -20,16 +20,24 @@ def generate_roi(
     char_height: int,
     extra_width: int,
 ) -> Rect:
-    """Generate ROI for a single cell.
+    """
+    Generate ROI for a single cell.
 
-    Args:
-        row_position: Center y-coordinate of row
-        column_separators: (x1, x2) column boundaries
-        char_height: Character height
-        extra_width: Extra width padding
+    Parameters
+    ----------
+    row_position : int
+        Center y-coordinate of row.
+    column_separators : tuple[int, int]
+        (x1, x2) column boundaries.
+    char_height : int
+        Character height.
+    extra_width : int
+        Extra width padding.
 
-    Returns:
-        Rectangle (x, y, width, height)
+    Returns
+    -------
+    Rect
+        Rectangle (x, y, width, height).
     """
     row_height = ceil(int(1.5 * char_height))
     column_width = (column_separators[1] - column_separators[0]) + extra_width
@@ -47,16 +55,24 @@ def generate_roi_grid(
     char_height: int,
     extra_width: int,
 ) -> list[list[Rect]]:
-    """Generate grid of ROIs for all cells.
+    """
+    Generate grid of ROIs for all cells.
 
-    Args:
-        row_positions: list of row center y-coordinates
-        column_separators: list of column x-coordinates
-        char_height: Character height
-        extra_width: Extra width padding
+    Parameters
+    ----------
+    row_positions : list[int]
+        List of row center y-coordinates.
+    column_separators : list[int]
+        List of column x-coordinates.
+    char_height : int
+        Character height.
+    extra_width : int
+        Extra width padding.
 
-    Returns:
-        2D list of rectangles [columns][rows]
+    Returns
+    -------
+    list[list[Rect]]
+        2D list of rectangles [columns][rows].
     """
     row_positions = sorted(row_positions)
     column_separators = sorted(column_separators)
@@ -72,15 +88,22 @@ def generate_roi_grid(
 def roi_grid_coordinates(
     rois: list[Rect], n_rows: int, n_cols: int
 ) -> list[tuple[int, int]]:
-    """Label ROIs by their grid position using KMeans clustering.
+    """
+    Label ROIs by their grid position using KMeans clustering.
 
-    Args:
-        rois: list of rectangles
-        n_rows: Number of rows in grid
-        n_cols: Number of columns in grid
+    Parameters
+    ----------
+    rois : list[Rect]
+        List of rectangles.
+    n_rows : int
+        Number of rows in grid.
+    n_cols : int
+        Number of columns in grid.
 
-    Returns:
-        list of (row, col) tuples for each ROI
+    Returns
+    -------
+    list[tuple[int, int]]
+        List of (row, col) tuples for each ROI.
     """
     if not rois:
         return []
@@ -121,14 +144,20 @@ def roi_grid_coordinates(
 
 
 def is_rect_contained(inner: Rect, outer: Rect) -> bool:
-    """Check if inner rectangle is contained in outer rectangle.
+    """
+    Check if inner rectangle is contained in outer rectangle.
 
-    Args:
-        inner: Inner rectangle
-        outer: Outer rectangle
+    Parameters
+    ----------
+    inner : Rect
+        Inner rectangle.
+    outer : Rect
+        Outer rectangle.
 
-    Returns:
-        True if inner is strictly contained in outer
+    Returns
+    -------
+    bool
+        True if inner is strictly contained in outer.
     """
     inner_x1, inner_y1 = inner[0], inner[1]
     inner_x2, inner_y2 = inner[0] + inner[2], inner[1] + inner[3]
@@ -147,15 +176,22 @@ def is_rect_contained(inner: Rect, outer: Rect) -> bool:
 def label_contained_roi(
     container_rois: list[Rect], labels: list[Any], child_roi: Rect
 ) -> Any:
-    """Find label of container that contains child ROI.
+    """
+    Find label of container that contains child ROI.
 
-    Args:
-        container_rois: list of container rectangles
-        labels: list of labels corresponding to containers
-        child_roi: ROI to label
+    Parameters
+    ----------
+    container_rois : list[Rect]
+        List of container rectangles.
+    labels : list[Any]
+        List of labels corresponding to containers.
+    child_roi : Rect
+        ROI to label.
 
-    Returns:
-        Label of containing container
+    Returns
+    -------
+    Any
+        Label of containing container, or None if not found.
     """
     for container_roi, label in zip(container_rois, labels):
         if is_rect_contained(child_roi, container_roi):
@@ -163,13 +199,18 @@ def label_contained_roi(
 
 
 def autocrop(image: MatLike) -> MatLike:
-    """Remove padding from image.
+    """
+    Remove padding from image.
 
-    Args:
-        image: Input image
+    Parameters
+    ----------
+    image : MatLike
+        Input image.
 
-    Returns:
-        Cropped image
+    Returns
+    -------
+    MatLike
+        Cropped image.
     """
     is_fg = image > 0
     cols_with_content = np.argwhere(is_fg.any(axis=0)).flatten()
@@ -180,6 +221,21 @@ def autocrop(image: MatLike) -> MatLike:
 
 
 def autocrop_axis(a: NDArray[Any], axis: int) -> tuple[int, int]:
+    """
+    Find the start and end indices of content along a specific axis.
+
+    Parameters
+    ----------
+    a : NDArray[Any]
+        Input array (image or mask).
+    axis : int
+        The axis along which to find content (0 for columns, 1 for rows).
+
+    Returns
+    -------
+    tuple[int, int]
+        Start and end indices.
+    """
     a_with_content = np.argwhere(a.any(axis)).flatten()
     if len(a_with_content) > 0:
         return int(a_with_content.min()), int(a_with_content.max())
@@ -187,14 +243,20 @@ def autocrop_axis(a: NDArray[Any], axis: int) -> tuple[int, int]:
 
 
 def autocrop_roi(roi: Rect, image: MatLike) -> Rect:
-    """Autocrop a region of interest within an image.
+    """
+    Autocrop a region of interest within an image.
 
-    Args:
-        roi: Region of interest (x, y, width, height)
-        image: Full image
+    Parameters
+    ----------
+    roi : Rect
+        Region of interest (x, y, width, height).
+    image : MatLike
+        Full image.
 
-    Returns:
-        Cropped ROI coordinates
+    Returns
+    -------
+    Rect
+        Cropped ROI coordinates.
     """
     image = extract(image, roi)
     is_fg = image > 0
@@ -204,15 +266,20 @@ def autocrop_roi(roi: Rect, image: MatLike) -> Rect:
 
 
 def pad_roi(roi: Rect, padding: int | tuple[int, int]) -> Rect:
-    """Add padding to region of interest.
+    """
+    Add padding to region of interest.
 
-    Args:
-        roi: Region (x, y, width, height)
-        padding: Padding size in pixels
-        roi_area: (height, width) of full image
+    Parameters
+    ----------
+    roi : Rect
+        Region (x, y, width, height).
+    padding : int | tuple[int, int]
+        Padding size in pixels. If int, same padding for width and height.
 
-    Returns:
-        Padded ROI
+    Returns
+    -------
+    Rect
+        Padded ROI.
     """
     if isinstance(padding, int):
         pad_x, pad_y = padding, padding
@@ -231,26 +298,36 @@ def pad_roi(roi: Rect, padding: int | tuple[int, int]) -> Rect:
 
 
 def rect2easy(rect: Rect) -> list[int]:
-    """Convert OpenCV rect to easyocr format [x1, x2, y1, y2].
+    """
+    Convert OpenCV rect to easyocr format [x1, x2, y1, y2].
 
-    Args:
-        rect: OpenCV rectangle (x, y, w, h)
+    Parameters
+    ----------
+    rect : Rect
+        OpenCV rectangle (x, y, w, h).
 
-    Returns:
-        Easyocr rectangle format
+    Returns
+    -------
+    list[int]
+        Easyocr rectangle format.
     """
     x, y, w, h = rect
     return [x, x + w, y, y + h]
 
 
 def easyrect2rect(eo_rect: list[int]) -> Rect:
-    """Convert easyocr format to OpenCV rect.
+    """
+    Convert easyocr format to OpenCV rect.
 
-    Args:
-        eo_rect: Easyocr rectangle [x1, x2, y1, y2]
+    Parameters
+    ----------
+    eo_rect : list[int]
+        Easyocr rectangle [x1, x2, y1, y2].
 
-    Returns:
-        OpenCV rectangle (x, y, w, h)
+    Returns
+    -------
+    Rect
+        OpenCV rectangle (x, y, w, h).
     """
     x1, x2, y1, y2 = eo_rect
     return [x1, y1, x2 - x1, y2 - y1]
@@ -261,20 +338,27 @@ def resize_roi_to_largest_connected_region(
     binarized_image: MatLike,
     word_blobs_parameters: WordBlobsCreationParameters,
 ) -> Rect | None:
-    """Resize ROI to the largest connected region of foreground pixels.
+    """
+    Resize ROI to the largest connected region of foreground pixels.
 
     This function takes a ROI and a binarized image (white foreground, black background),
     applies the word blobs technique to connect nearby foreground regions, finds the
     largest connected component within the ROI, and returns a new ROI that tightly
     bounds that component.
 
-    Args:
-        roi: Region of interest (x, y, width, height)
-        binarized_image: Binary image with white (255) foreground and black (0) background
-        word_blobs_parameters: Parameters for word blob creation
+    Parameters
+    ----------
+    roi : Rect
+        Region of interest (x, y, width, height).
+    binarized_image : MatLike
+        Binary image with white (255) foreground and black (0) background.
+    word_blobs_parameters : WordBlobsCreationParameters
+        Parameters for word blob creation.
 
-    Returns:
-        New ROI bounding the largest connected region, or None if no foreground found
+    Returns
+    -------
+    Rect | None
+        New ROI bounding the largest connected region, or None if no foreground found.
     """
     # Extract the ROI region from the image
     roi_image = extract(binarized_image, roi)
@@ -311,7 +395,22 @@ def resize_roi_to_largest_connected_region(
     return [int(x_abs), int(y_abs), int(w_rel), int(h_rel)]
 
 
-def expand_roi_atleast(roi: Rect, atleast: tuple[int, int]):
+def expand_roi_atleast(roi: Rect, atleast: tuple[int, int]) -> Rect:
+    """
+    Expand ROI to be at least expected size.
+
+    Parameters
+    ----------
+    roi : Rect
+        Input rectangle (x, y, w, h).
+    atleast : tuple[int, int]
+        Minimum (width, height).
+
+    Returns
+    -------
+    Rect
+        Expanded rectangle.
+    """
     _, _, w, h = roi
     exp_w, exp_h = atleast
     pad_x = int(ceil(max((exp_w - w) / 2, 0)))
@@ -320,14 +419,20 @@ def expand_roi_atleast(roi: Rect, atleast: tuple[int, int]):
 
 
 def extract(image: MatLike, rect: Rect) -> MatLike:
-    """Extract rectangular region from image.
+    """
+    Extract rectangular region from image.
 
-    Args:
-        image: Input image
-        rect: Rectangle (x, y, width, height)
+    Parameters
+    ----------
+    image : MatLike
+        Input image.
+    rect : Rect
+        Rectangle (x, y, width, height).
 
-    Returns:
-        Extracted region
+    Returns
+    -------
+    MatLike
+        Extracted region.
     """
     x, y, w, h = rect
     return image[
@@ -335,3 +440,40 @@ def extract(image: MatLike, rect: Rect) -> MatLike:
         max(x, 0) : min(x + w, image.shape[1]),
     ]
     # return image[y : y + h, x : x + w]
+
+
+def prepare_value_roi(
+    roi: Rect,
+    image: MatLike,
+    character_shape: tuple[int, int],
+    parameters: WordBlobsCreationParameters,
+    padding: int,
+):
+    """
+    Prepare ROI for value reading by resizing to largest connected region and padding.
+
+    Parameters
+    ----------
+    roi : Rect
+        Initial ROI.
+    image : MatLike
+        Image containing the ROI.
+    character_shape : tuple[int, int]
+        Expected character shape (width, height) to ensure minimum size.
+    parameters : WordBlobsCreationParameters
+        Parameters for word detection.
+    padding : int
+        Padding to add around the result.
+
+    Returns
+    -------
+    Rect
+        Prepared ROI.
+    """
+    largest_region = resize_roi_to_largest_connected_region(roi, image, parameters)
+    if largest_region is None:
+        largest_region = roi
+    largest_region = autocrop_roi(largest_region, image)
+    largest_region = expand_roi_atleast(largest_region, character_shape)
+
+    return pad_roi(largest_region, padding)
