@@ -12,7 +12,7 @@ import polars as pl
 from PIL import Image
 from tqdm import tqdm
 
-from nivo_reader import read_nivo_table
+from .nivo_reader import read_nivo_table
 
 # Suppress pin_memory warnings from PyTorch/EasyOCR
 warnings.filterwarnings("ignore", message=".*pin_memory.*")

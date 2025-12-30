@@ -8,12 +8,12 @@ from cv2.typing import MatLike, Rect
 from scipy.signal import find_peaks
 
 from .configuration.preprocessing import (
-    ThresholdParameters,
-    LinesDetectionParameters,
+    ThresholdConfiguration,
+    LinesDetectionConfiguration,
 )
 from .configuration.table_and_cell_detection import (
-    LinesExtractionParameters,
-    WordBlobsCreationParameters,
+    LinesExtractionConfiguration,
+    WordBlobsCreationConfiguration,
 )
 from .image_processing import ms_threshold, detect_lines, combine_lines
 
@@ -42,7 +42,7 @@ def ok_side(x: int, expected_x: int, tol: float) -> bool:
 def try_detect_table_rect(
     gray_image: MatLike,
     expected_table_shape: tuple[int, int],
-    threshold_parameters: ThresholdParameters,
+    threshold_configuration: ThresholdConfiguration,
 ) -> Rect | None:
     """
     Detect table rectangle in image.
@@ -53,7 +53,7 @@ def try_detect_table_rect(
         Grayscale image.
     expected_table_shape : tuple[int, int]
         Expected table (width, height).
-    threshold_parameters : ThresholdParameters
+    threshold_configuration : ThresholdConfiguration
         Threshold configuration.
 
     Returns
@@ -61,7 +61,7 @@ def try_detect_table_rect(
     Rect | None
         Bounding rectangle of table or None if not found.
     """
-    thresh = ms_threshold(gray_image, threshold_parameters)
+    thresh = ms_threshold(gray_image, threshold_configuration)
     expected_table_width, expected_table_height = expected_table_shape
     bboxes = sorted(
         filter(
@@ -113,7 +113,7 @@ def extract_table_lines(
     img_bin: MatLike,
     table_width: int | None,
     table_height: int | None,
-    parameters: LinesExtractionParameters,
+    configuration: LinesExtractionConfiguration,
 ) -> MatLike:
     """
     Extract all table lines (horizontal and vertical).
@@ -126,7 +126,7 @@ def extract_table_lines(
         Table width.
     table_height : int | None
         Table height.
-    parameters : LinesExtractionParameters
+    configuration : LinesExtractionConfiguration
         Line extraction configuration.
 
     Returns
@@ -137,25 +137,25 @@ def extract_table_lines(
     vertical_lines = detect_lines(
         img_bin,
         table_height,
-        parameters=parameters.vertical_lines,
+        configuration=configuration.vertical_lines,
         kind="vertical",
     )
     horizontal_lines = detect_lines(
         img_bin,
         table_width,
-        parameters=parameters.horizontal_lines,
+        configuration=configuration.horizontal_lines,
         kind="horizontal",
     )
     return combine_lines(
         vertical_lines,
         horizontal_lines,
-        parameters=parameters.lines_combination,
+        configuration=configuration.lines_combination,
     )
 
 
 def remove_lines_from_image(
     img_bin: MatLike,
-    parameters: LinesExtractionParameters,
+    configuration: LinesExtractionConfiguration,
     table_width: int | None = None,
     table_height: int | None = None,
 ) -> MatLike:
@@ -166,7 +166,7 @@ def remove_lines_from_image(
     ----------
     img_bin : MatLike
         Binary image.
-    parameters : LinesExtractionParameters
+    configuration : LinesExtractionConfiguration
         Line extraction configuration.
     table_width : int | None, optional
         Table width.
@@ -178,7 +178,7 @@ def remove_lines_from_image(
     MatLike
         Image with lines removed.
     """
-    table_lines = extract_table_lines(img_bin, table_width, table_height, parameters)
+    table_lines = extract_table_lines(img_bin, table_width, table_height, configuration)
     image_wo_lines = cv2.subtract(img_bin, table_lines)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
     image_cleaned = cv2.erode(image_wo_lines, kernel, iterations=1)
@@ -186,7 +186,7 @@ def remove_lines_from_image(
 
 
 def create_word_blobs(
-    image_cleaned: MatLike, parameters: WordBlobsCreationParameters
+    image_cleaned: MatLike, configuration: WordBlobsCreationConfiguration
 ) -> MatLike:
     """
     Convert words to blobs through dilation.
@@ -195,7 +195,7 @@ def create_word_blobs(
     ----------
     image_cleaned : MatLike
         Cleaned image.
-    parameters : WordBlobsCreationParameters
+    configuration : WordBlobsCreationConfiguration
         Word blob creation configuration.
 
     Returns
@@ -204,17 +204,17 @@ def create_word_blobs(
         Image with word blobs.
     """
     gap_kernel = cv2.getStructuringElement(
-        parameters.gap_kernel_type, parameters.gap_kernel_shape
+        configuration.gap_kernel_type, configuration.gap_kernel_shape
     )
     image_with_blobs = cv2.dilate(
-        image_cleaned, gap_kernel, iterations=parameters.gap_iterations
+        image_cleaned, gap_kernel, iterations=configuration.gap_iterations
     )
 
     simple_kernel = cv2.getStructuringElement(
-        cv2.MORPH_RECT, parameters.simple_kernel_shape
+        cv2.MORPH_RECT, configuration.simple_kernel_shape
     )
     image_with_blobs = cv2.dilate(
-        image_with_blobs, simple_kernel, iterations=parameters.simple_iterations
+        image_with_blobs, simple_kernel, iterations=configuration.simple_iterations
     )
     return image_with_blobs
 
@@ -235,11 +235,12 @@ def detect_column_separators(table_img: MatLike, char_width: int) -> list[int]:
     list[int]
         List of column x-coordinates.
     """
+    # TODO: watch out for the hardcoded parameters
     vertical_lines = detect_lines(
         table_img,
         table_img.shape[1],
-        LinesDetectionParameters(20),
         kind="vertical",
+        configuration=LinesDetectionConfiguration(20),
     )
     peaks: list[int] = list(
         find_peaks(

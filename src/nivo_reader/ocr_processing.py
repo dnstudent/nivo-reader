@@ -14,7 +14,7 @@ from cv2.typing import MatLike, Rect
 from numpy.typing import NDArray
 
 from .configuration.table_and_cell_detection import (
-    WordBlobsCreationParameters,
+    WordBlobsCreationConfiguration,
 )
 from .image_processing import extract_contours_boxes
 from .roi_utilities import (
@@ -271,7 +271,7 @@ def detect_station_boxes(
     """
     word_blobs = create_word_blobs(
         column_image,
-        WordBlobsCreationParameters(gap_kernel_shape=(char_shape[0] // 2, 1)),
+        WordBlobsCreationConfiguration(gap_kernel_shape=(char_shape[0] // 2, 1)),
     )
     word_boxes = list(extract_contours_boxes(word_blobs))
     word_boxes.sort(key=lambda r: r[1])
@@ -841,7 +841,7 @@ def read_values(
                 roi,
                 image,
                 number_char_shape,
-                WordBlobsCreationParameters(gap_iterations=2, simple_iterations=0),
+                WordBlobsCreationConfiguration(gap_iterations=2, simple_iterations=0),
                 roi_padding,
             ),
             rois_flat,

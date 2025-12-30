@@ -3,31 +3,31 @@ from dataclasses import dataclass, field
 from fancy_dataclass import TOMLDataclass, JSONDataclass
 import cv2
 
-from .preprocessing import LinesDetectionParameters, LinesCombinationParameters
+from .preprocessing import LinesDetectionConfiguration, LinesCombinationConfiguration
 
 
 @dataclass
-class LinesExtractionParameters(TOMLDataclass, JSONDataclass):
-    vertical_lines: LinesDetectionParameters = field(
-        default_factory=lambda: LinesDetectionParameters.default("vertical")
+class LinesExtractionConfiguration(TOMLDataclass, JSONDataclass):
+    vertical_lines: LinesDetectionConfiguration = field(
+        default_factory=lambda: LinesDetectionConfiguration.default("vertical")
     )
-    horizontal_lines: LinesDetectionParameters = field(
-        default_factory=lambda: LinesDetectionParameters.default("horizontal")
+    horizontal_lines: LinesDetectionConfiguration = field(
+        default_factory=lambda: LinesDetectionConfiguration.default("horizontal")
     )
-    lines_combination: LinesCombinationParameters = field(
-        default_factory=LinesCombinationParameters
+    lines_combination: LinesCombinationConfiguration = field(
+        default_factory=LinesCombinationConfiguration
     )
 
 
 @dataclass
-class DottedLinesRemovalParameters(TOMLDataclass, JSONDataclass):
+class DottedLinesRemovalConfiguration(TOMLDataclass, JSONDataclass):
     kernel_divisor: int = field(default=20)
     erosion_iterations: int = field(default=1)
     dilation_iterations: int = field(default=1)
 
 
 @dataclass
-class WordBlobsCreationParameters(TOMLDataclass, JSONDataclass):
+class WordBlobsCreationConfiguration(TOMLDataclass, JSONDataclass):
     gap_kernel_type: int = field(
         default=cv2.MORPH_RECT
     )  #: cv2.MorphShapes = cv2.MORPH_RECT,
@@ -38,13 +38,13 @@ class WordBlobsCreationParameters(TOMLDataclass, JSONDataclass):
 
 
 @dataclass
-class TableProcessingParameters(TOMLDataclass, JSONDataclass):
-    lines_removal: LinesExtractionParameters = field(
-        default_factory=LinesExtractionParameters
+class TableProcessingConfiguration(TOMLDataclass, JSONDataclass):
+    lines_removal: LinesExtractionConfiguration = field(
+        default_factory=LinesExtractionConfiguration
     )
-    word_blobs_creation: WordBlobsCreationParameters = field(
-        default_factory=WordBlobsCreationParameters
+    word_blobs_creation: WordBlobsCreationConfiguration = field(
+        default_factory=WordBlobsCreationConfiguration
     )
-    dots_removal: DottedLinesRemovalParameters = field(
-        default_factory=DottedLinesRemovalParameters
+    dots_removal: DottedLinesRemovalConfiguration = field(
+        default_factory=DottedLinesRemovalConfiguration
     )

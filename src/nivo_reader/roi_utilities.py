@@ -10,7 +10,7 @@ from cv2.typing import MatLike, Rect
 from numpy.typing import NDArray
 from sklearn.cluster import KMeans
 
-from .configuration.table_and_cell_detection import WordBlobsCreationParameters
+from .configuration.table_and_cell_detection import WordBlobsCreationConfiguration
 from .table_detection import create_word_blobs
 
 
@@ -336,7 +336,7 @@ def easyrect2rect(eo_rect: list[int]) -> Rect:
 def resize_roi_to_largest_connected_region(
     roi: Rect,
     binarized_image: MatLike,
-    word_blobs_parameters: WordBlobsCreationParameters,
+    word_blobs_configuration: WordBlobsCreationConfiguration,
 ) -> Rect | None:
     """
     Resize ROI to the largest connected region of foreground pixels.
@@ -352,8 +352,8 @@ def resize_roi_to_largest_connected_region(
         Region of interest (x, y, width, height).
     binarized_image : MatLike
         Binary image with white (255) foreground and black (0) background.
-    word_blobs_parameters : WordBlobsCreationParameters
-        Parameters for word blob creation.
+    word_blobs_configuration : WordBlobsCreationConfiguration
+        Configuration for word blob creation.
 
     Returns
     -------
@@ -367,7 +367,7 @@ def resize_roi_to_largest_connected_region(
         return roi
 
     # Apply word blobs technique to connect nearby foreground regions
-    roi_with_blobs = create_word_blobs(roi_image, word_blobs_parameters)
+    roi_with_blobs = create_word_blobs(roi_image, word_blobs_configuration)
 
     # Find connected components
     num_labels, _, stats, _ = cv2.connectedComponentsWithStats(
@@ -446,7 +446,7 @@ def prepare_value_roi(
     roi: Rect,
     image: MatLike,
     character_shape: tuple[int, int],
-    parameters: WordBlobsCreationParameters,
+    configuration: WordBlobsCreationConfiguration,
     padding: int,
 ):
     """
@@ -460,8 +460,8 @@ def prepare_value_roi(
         Image containing the ROI.
     character_shape : tuple[int, int]
         Expected character shape (width, height) to ensure minimum size.
-    parameters : WordBlobsCreationParameters
-        Parameters for word detection.
+    configuration : WordBlobsCreationConfiguration
+        Configuration for word detection.
     padding : int
         Padding to add around the result.
 
@@ -470,7 +470,7 @@ def prepare_value_roi(
     Rect
         Prepared ROI.
     """
-    largest_region = resize_roi_to_largest_connected_region(roi, image, parameters)
+    largest_region = resize_roi_to_largest_connected_region(roi, image, configuration)
     if largest_region is None:
         largest_region = roi
     largest_region = autocrop_roi(largest_region, image)

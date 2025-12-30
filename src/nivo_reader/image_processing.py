@@ -14,11 +14,12 @@ from img2table.document.base.rotation import (
 )
 
 from .configuration.preprocessing import (
-    BinarizationParameters,
-    PreprocessingParameters,
-    ThresholdParameters,
-    LinesDetectionParameters,
-    LinesCombinationParameters,
+    BinarizationConfiguration,
+    PreprocessConfiguration,
+    ThresholdConfiguration,
+    LinesDetectionConfiguration,
+    LinesCombinationConfiguration,
+    AngleDetectionConfiguration,
 )
 
 logger = logging.getLogger("nivo_reader.image_processing")
@@ -27,19 +28,27 @@ logger = logging.getLogger("nivo_reader.image_processing")
 def detect_lines(
     img_bin: MatLike,
     table_side: int | None,
-    parameters: LinesDetectionParameters,
     kind: Literal["vertical", "horizontal"],
+    configuration: LinesDetectionConfiguration,
 ) -> MatLike:
-    """Detect lines (horizontal or vertical) in binary image.
+    """
+    Detect lines (horizontal or vertical) in binary image.
 
-    Args:
-        img_bin: Binary image with white foreground
-        table_side: Size of table along relevant axis
-        parameters: Line detection configuration
-        kind: "vertical" or "horizontal"
+    Parameters
+    ----------
+    img_bin : MatLike
+        Binary image with white foreground.
+    table_side : int | None
+        Size of table along relevant axis.
+    configuration : LinesDetectionConfiguration
+        Line detection configuration.
+    kind : Literal["vertical", "horizontal"]
+        "vertical" or "horizontal".
 
-    Returns:
-        Image with detected lines
+    Returns
+    -------
+    MatLike
+        Image with detected lines.
     """
     assert kind in ["vertical", "horizontal"]
     if img_bin.mean() > 127.5:
@@ -49,47 +58,70 @@ def detect_lines(
     if table_side is None:
         kernel_size = (
             img_bin.shape[0] if kind == "horizontal" else img_bin.shape[1]
-        ) // parameters.kernel_divisor
+        ) // configuration.kernel_divisor
     else:
-        kernel_size = table_side // parameters.kernel_divisor
+        kernel_size = table_side // configuration.kernel_divisor
     kernel_shape = (1, kernel_size) if kind == "vertical" else (kernel_size, 1)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_shape)
     eroded_image = cv2.erode(
         img_bin,
         kernel,
-        iterations=parameters.erosion_iterations,
+        kernel,
+        iterations=configuration.erosion_iterations,
     )
     return cv2.dilate(
         eroded_image,
         kernel,
-        iterations=parameters.dilation_iterations,
+        iterations=configuration.dilation_iterations,
     )
 
 
 def combine_lines(
     vertical_lines: MatLike,
     horizontal_lines: MatLike,
-    parameters: LinesCombinationParameters,
+    configuration: LinesCombinationConfiguration,
 ) -> MatLike:
-    """Combine vertical and horizontal lines with dilation.
+    """
+    Combine vertical and horizontal lines with dilation.
 
-    Args:
-        vertical_lines: Vertical line image
-        horizontal_lines: Horizontal line image
-        parameters: Combination configuration
+    Parameters
+    ----------
+    vertical_lines : MatLike
+        Vertical line image.
+    horizontal_lines : MatLike
+        Horizontal line image.
+    configuration : LinesCombinationConfiguration
+        Combination configuration.
 
-    Returns:
-        Combined and dilated line image
+    Returns
+    -------
+    MatLike
+        Combined and dilated line image.
     """
     combined = cv2.addWeighted(vertical_lines, 1, horizontal_lines, 1, 1)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, parameters.dilation_kernel_shape)
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT, configuration.dilation_kernel_shape
+    )
     combined_dilated = cv2.dilate(
-        combined, kernel, iterations=parameters.dilation_iterations
+        combined, kernel, iterations=configuration.dilation_iterations
     )
     return combined_dilated
 
 
-def contour_hw_ratio(contour):
+def contour_hw_ratio(contour: MatLike) -> float:
+    """
+    Calculate the height-to-width ratio of a contour.
+
+    Parameters
+    ----------
+    contour : MatLike
+        Input contour.
+
+    Returns
+    -------
+    float
+        Height/Width ratio.
+    """
     _, _, w, h = cv2.boundingRect(contour)
     return h / w
 
@@ -98,35 +130,64 @@ def contour_hw_ratio(contour):
 def nivo_lines_angle(
     image: MatLike,
     orientation: Literal["vertical", "horizontal"],
-    lines_detection_parameters: LinesDetectionParameters,
+    configuration: AngleDetectionConfiguration,
 ) -> float | None:
+    """
+    Calculate the median angle of lines in the specified orientation.
+
+    Parameters
+    ----------
+    image : MatLike
+        Input image.
+    orientation : Literal["vertical", "horizontal"]
+        Orientation of lines to detect ("vertical" or "horizontal").
+    lines_detection_configuration : LinesDetectionConfiguration
+        Configuration for line detection.
+
+    Returns
+    -------
+    float | None
+        Median angle of detected lines in degrees, or None if no valid lines found.
+    """
     vertical_lines = detect_lines(
-        image, table_side=None, kind=orientation, parameters=lines_detection_parameters
+        image,
+        table_side=None,
+        kind=orientation,
+        configuration=configuration.lines_detection_configuration,
     )
 
-    # TODO: watch out for the hardcoded parameter
     vertical_boxes = list(
         filter(
-            lambda box: box[2] > 0 and box[3] / box[2] > 20,
+            lambda box: box[2] > 0
+            and box[3] / box[2] > configuration.line_ratio_threshold,
             extract_contours_boxes(vertical_lines),
         )
     )
 
-    # weights = [h for _, _, _, h in vertical_boxes]
+    # Compute the angle of each line as the arctangent of the height-to-width ratio
     angles = [np.arctan(h / w) if w > 1 else np.pi / 2 for _, _, w, h in vertical_boxes]
 
     if angles:
-        # return float(np.degrees(np.average(angles, weights=weights)))
         return float(np.degrees(np.median(angles)))
     else:
         return None
 
 
-def img2table_lines_angle(img: np.ndarray) -> float:
+# TODO: Improve attribution
+# Taken from img2table. Credit goes to the authors.
+def img2table_lines_angle(img: MatLike) -> float:
     """
-    Fix rotation of input image (based on https://www.mdpi.com/2079-9292/9/1/55) by at most 45 degrees
-    :param img: image array
-    :return: rotated image array and boolean indicating if the image has been rotated
+    Fix rotation of input image (based on https://www.mdpi.com/2079-9292/9/1/55) by at most 45 degrees.
+
+    Parameters
+    ----------
+    img : MatLike
+        Image array.
+
+    Returns
+    -------
+    float
+        Estimated skew angle.
     """
     # Get connected components of the images
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -142,36 +203,41 @@ def img2table_lines_angle(img: np.ndarray) -> float:
     return estimate_skew(angles=angles, thresh=thresh)
 
 
-def deskew_nivo(wb_table_image: MatLike, *oth_images: *tuple[MatLike, ...]):
+def deskew_nivo(
+    wb_table_image: MatLike,
+    *oth_images: *tuple[MatLike, ...],
+    configuration: AngleDetectionConfiguration,
+):
     """
     Deskews an image by detecting and correcting its skew based on the orientation of detected horizontal lines.
 
     This function corrects the skew of an input image by first detecting horizontal lines within the image using morphological operations. It calculates the average angle of these detected lines and rotates the image by this angle to align the horizontal lines correctly, effectively deskewing the image. The result is an image where the content is horizontally aligned, which is particularly useful for preprocessing before further analysis or OCR (Optical Character Recognition).
 
     Parameters
-    --------------
-    wb_table_image :
+    ----------
+    wb_table_image : MatLike
         The input image that needs to be deskewed. This image must be binary: white foreground and black background. It should be just the table.
+    *oth_images : MatLike
+        Other images to rotate by the same angle.
+    configuration : AngleDetectionConfiguration
+        Configuration for angle detection.
 
     Returns
-    --------------
-    lines_median_angle :
-        The median angle of vertical lines
-    wb_rotated:
-        The deskewed wb_table_image
-    *oth:
-        Other images rotated by the same angle
+    -------
+    float | None
+        The median angle of vertical lines.
+    MatLike
+        The deskewed wb_table_image.
+    tuple[MatLike, ...]
+        Other images rotated by the same angle.
     """
 
     # Detect vertical lines and calculate the average angle
 
-    # TODO: watch out for the hardcoded parameters
     lines_median_angle = nivo_lines_angle(
         wb_table_image,
         orientation="vertical",
-        lines_detection_parameters=LinesDetectionParameters(
-            kernel_divisor=20, dilation_iterations=1
-        ),
+        configuration=configuration,
     )
     if not lines_median_angle:
         return None, wb_table_image, *oth_images
@@ -200,7 +266,8 @@ def deskew_nivo(wb_table_image: MatLike, *oth_images: *tuple[MatLike, ...]):
                 rotation_matrix,
                 (w, h),
                 flags=cv2.INTER_CUBIC,
-                borderMode=cv2.BORDER_REPLICATE,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=[0],
             )
         )
 
@@ -208,13 +275,18 @@ def deskew_nivo(wb_table_image: MatLike, *oth_images: *tuple[MatLike, ...]):
 
 
 def my_table_struct(bw_image: MatLike) -> MatLike:
-    """Extract table structure using morphological operations.
+    """
+    Extract table structure using morphological operations.
 
-    Args:
-        bw_image: Binary image where foreground is white
+    Parameters
+    ----------
+    bw_image : MatLike
+        Binary image where foreground is white.
 
-    Returns:
-        Image with detected table structure
+    Returns
+    -------
+    MatLike
+        Image with detected table structure.
     """
     op = cv2.MORPH_OPEN
     horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1))
@@ -243,75 +315,96 @@ def my_table_struct(bw_image: MatLike) -> MatLike:
 
 
 def ms_binary(
-    image_in_grayscale: MatLike, binarization_parameters: BinarizationParameters
+    image_in_grayscale: MatLike, configuration: BinarizationConfiguration
 ) -> MatLike:
-    """Apply adaptive thresholding to create a binary image.
+    """
+    Apply adaptive thresholding to create a binary image.
 
-    Args:
-        image_in_grayscale: Grayscale image
-        binarization_parameters: Binarization configuration
+    Parameters
+    ----------
+    image_in_grayscale : MatLike
+        Grayscale image.
+    configuration : BinarizationConfiguration
+        Binarization configuration.
 
-    Returns:
-        Binary image
+    Returns
+    -------
+    MatLike
+        Binary image.
     """
     binarized_image = cv2.adaptiveThreshold(
         image_in_grayscale,
         255,
-        binarization_parameters.adaptive_threshold_type,
+        configuration.adaptive_threshold_type,
         cv2.THRESH_BINARY,
-        binarization_parameters.region_side,
-        binarization_parameters.threshold_c,
+        configuration.region_side,
+        configuration.threshold_c,
     )
     return binarized_image
 
 
-def ms_threshold(image: MatLike, threshold_parameters: ThresholdParameters) -> MatLike:
-    """Apply Otsu's thresholding and morphological closing.
+def ms_threshold(image: MatLike, configuration: ThresholdConfiguration) -> MatLike:
+    """
+    Apply Otsu's thresholding and morphological closing.
 
-    Args:
-        image: Input image (grayscale or color)
-        threshold_parameters: Threshold configuration
+    Parameters
+    ----------
+    image : MatLike
+        Input image (grayscale or color).
+    configuration : ThresholdConfiguration
+        Threshold configuration.
 
-    Returns:
-        Thresholded image
+    Returns
+    -------
+    MatLike
+        Thresholded image.
     """
     if image.ndim > 2:
         image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     thresh = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-    kernel = np.ones(threshold_parameters.kernel_shape, np.uint8)
+    kernel = np.ones(configuration.kernel_shape, np.uint8)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
     return thresh
 
 
-def preproc(
+def preprocess(
     image: MatLike,
-    preprocessing_parameters: PreprocessingParameters,
     deskew_method: Literal["nivo", "img2table"],
+    configuration: PreprocessConfiguration,
 ) -> tuple[MatLike, MatLike, MatLike, MatLike]:
-    """Preprocess image: rotate, convert to grayscale, binarize, threshold.
+    """
+    Preprocess image: rotate, convert to grayscale, binarize, threshold.
 
-    Args:
-        image: Input image
-        preprocessing_parameters: Preprocessing configuration
+    Parameters
+    ----------
+    image : MatLike
+        Input image.
+    configuration : PreprocessConfiguration
+        Preprocess configuration.
+    deskew_method : Literal["nivo", "img2table"]
+        Deskew method to use.
 
-    Returns:
-        tuple of (original, threshold, binarized, table_struct) images
+    Returns
+    -------
+    tuple[MatLike, MatLike, MatLike, MatLike]
+        tuple of (rotated, rotated_threshold, rotated_binarized, rotated_table_struct) images.
     """
     # Fix rotation. By default and as a starting point use the img2table method
     image = fix_rotation_image(image)[0]
-    # If using the custom nivo method, deskew the image and compare results
+    # If using the custom nivo method, deskew the image and compare results. `image` is the rotated image
+    # TODO: this is probably still improvable
     if deskew_method == "nivo":
         image_in_grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        thresh = ms_threshold(
-            image_in_grayscale, preprocessing_parameters.threshold_parameters
-        )
+        thresh = ms_threshold(image_in_grayscale, configuration.threshold_configuration)
         # Check if deskewing improved the result, i.e. if the angle is closer to 90 degrees after deskewing
         angle_before = nivo_lines_angle(
-            thresh, "vertical", LinesDetectionParameters(20, dilation_iterations=1)
+            thresh, "vertical", configuration.angle_detection_configuration
         )
-        _, thresh, nivo_image = deskew_nivo(thresh, image)
+        _, thresh, nivo_image = deskew_nivo(
+            thresh, image, configuration=configuration.angle_detection_configuration
+        )
         angle_after = nivo_lines_angle(
-            thresh, "vertical", LinesDetectionParameters(20, dilation_iterations=1)
+            thresh, "vertical", configuration.angle_detection_configuration
         )
         if angle_after is not None and (
             angle_before is None or abs(90 - angle_before) > abs(90 - angle_after)
@@ -321,17 +414,14 @@ def preproc(
         raise ValueError(f"Invalid deskew method: {deskew_method}")  # pyright: ignore[reportUnreachable]
 
     image_in_grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # Convert to grayscale
 
     # Apply adaptive thresholding
     binarized_image = ms_binary(
-        image_in_grayscale, preprocessing_parameters.binarization_parameters
+        image_in_grayscale, configuration.binarization_configuration
     )
 
     # Apply Otsu's thresholding
-    thresh = ms_threshold(
-        image_in_grayscale, preprocessing_parameters.threshold_parameters
-    )
+    thresh = ms_threshold(image_in_grayscale, configuration.threshold_configuration)
 
     return (
         image,
@@ -342,13 +432,18 @@ def preproc(
 
 
 def extract_contours_boxes(image: MatLike) -> list[Rect]:
-    """Extract bounding boxes from contours in the image.
+    """
+    Extract bounding boxes from contours in the image.
 
-    Args:
-        image: Processed image
+    Parameters
+    ----------
+    image : MatLike
+        Processed image.
 
-    Returns:
-        List of bounding rectangles
+    Returns
+    -------
+    list[Rect]
+        List of bounding rectangles.
     """
     contours = cv2.findContours(image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[0]
     return [

@@ -6,7 +6,7 @@ from fancy_dataclass import JSONDataclass, TOMLDataclass
 
 
 @dataclass
-class LinesDetectionParameters(TOMLDataclass, JSONDataclass):
+class LinesDetectionConfiguration(TOMLDataclass, JSONDataclass):
     kernel_divisor: int = field(
         metadata={
             "doc": "Divisor of the image side to compute the convolution kernel side"
@@ -23,16 +23,37 @@ class LinesDetectionParameters(TOMLDataclass, JSONDataclass):
 
     @classmethod
     def default(cls, orientation: Literal["vertical", "horizontal"]) -> Self:
+        assert orientation in ["vertical", "horizontal"]
         if orientation == "horizontal":
             return cls(kernel_divisor=20)
-        elif orientation == "vertical":
+        if orientation == "vertical":
             return cls(kernel_divisor=50)
-        else:
-            raise AttributeError("Orientation must be 'horizontal' or 'vertical'")
 
 
 @dataclass
-class LinesCombinationParameters(TOMLDataclass, JSONDataclass):
+class AngleDetectionConfiguration(TOMLDataclass, JSONDataclass):
+    lines_detection_configuration: LinesDetectionConfiguration = field(
+        metadata={"doc": "Configuration for line detection"}
+    )
+    line_ratio_threshold: float = field(
+        default=20,
+        metadata={
+            "doc": "Threshold for the height-to-width or width-to-height of the bounding box of a contour to consider it a line"
+        },
+    )
+
+    @classmethod
+    def default(cls, orientation: Literal["vertical", "horizontal"]) -> Self:
+        return cls(
+            lines_detection_configuration=LinesDetectionConfiguration.default(
+                orientation=orientation
+            ),
+            line_ratio_threshold=20,
+        )
+
+
+@dataclass
+class LinesCombinationConfiguration(TOMLDataclass, JSONDataclass):
     dilation_kernel_shape: tuple[int, int] = field(
         default=(2, 2),
         metadata={
@@ -48,7 +69,7 @@ class LinesCombinationParameters(TOMLDataclass, JSONDataclass):
 
 
 @dataclass
-class BinarizationParameters(TOMLDataclass, JSONDataclass):
+class BinarizationConfiguration(TOMLDataclass, JSONDataclass):
     adaptive_threshold_type: int = field(
         default=cv2.ADAPTIVE_THRESH_MEAN_C,
         metadata={
@@ -64,7 +85,7 @@ class BinarizationParameters(TOMLDataclass, JSONDataclass):
 
 
 @dataclass
-class ThresholdParameters(TOMLDataclass, JSONDataclass):
+class ThresholdConfiguration(TOMLDataclass, JSONDataclass):
     kernel_shape: tuple[int, int] = field(
         default=(5, 5), metadata={"doc": "Shape of the kernel used for thresholding"}
     )
@@ -75,10 +96,13 @@ class ThresholdParameters(TOMLDataclass, JSONDataclass):
 
 
 @dataclass
-class PreprocessingParameters(TOMLDataclass, JSONDataclass):
-    binarization_parameters: BinarizationParameters = field(
-        default_factory=BinarizationParameters
+class PreprocessConfiguration(TOMLDataclass, JSONDataclass):
+    binarization_configuration: BinarizationConfiguration = field(
+        default_factory=BinarizationConfiguration
     )
-    threshold_parameters: ThresholdParameters = field(
-        default_factory=ThresholdParameters
+    threshold_configuration: ThresholdConfiguration = field(
+        default_factory=ThresholdConfiguration
+    )
+    angle_detection_configuration: AngleDetectionConfiguration = field(
+        default_factory=lambda: AngleDetectionConfiguration.default("vertical")
     )

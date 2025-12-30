@@ -8,11 +8,11 @@ from cv2.typing import MatLike
 
 from . import ocr_processing
 from .configuration.preprocessing import (
-    PreprocessingParameters,
-    ThresholdParameters,
+    PreprocessConfiguration,
+    ThresholdConfiguration,
 )
 from .configuration.table_and_cell_detection import (
-    LinesExtractionParameters,
+    LinesExtractionConfiguration,
 )
 from .excel_output import (
     draw_bounding_boxes,
@@ -20,7 +20,7 @@ from .excel_output import (
     save_artifacts,
     write_tables_to_excel,
 )
-from .image_processing import preproc
+from .image_processing import preprocess
 from .ocr_processing import (
     easyocr_names_reader,
     read_station_names,
@@ -98,14 +98,14 @@ def read_nivo_table(
         debug_image = original_image.copy()
 
     # Preprocessing
-    image, threshold_image, binarized_image, _ = preproc(
+    image, threshold_image, binarized_image, _ = preprocess(
         original_image,
-        PreprocessingParameters(),
         deskew_method="nivo",
+        configuration=PreprocessConfiguration(),
     )
 
     # Detect table rectangle
-    rect = try_detect_table_rect(image, table_shape, ThresholdParameters())
+    rect = try_detect_table_rect(image, table_shape, ThresholdConfiguration())
 
     if rect is None:
         raise ValueError("Could not detect table rectangle in image")
@@ -117,7 +117,7 @@ def read_nivo_table(
     # Remove lines
     binarized_subtable_wo_lines = remove_lines_from_image(
         255 - binarized_subtable,
-        LinesExtractionParameters(),
+        LinesExtractionConfiguration(),
     )
 
     # Detect rows and columns
