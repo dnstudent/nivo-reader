@@ -98,7 +98,7 @@ def read_nivo_table(
         debug_image = original_image.copy()
 
     # Preprocessing
-    image, threshold_image, binarized_image, _ = preprocess(
+    image, threshold_image, binarized_image = preprocess(
         original_image,
         deskew_method="nivo",
         configuration=PreprocessConfiguration(),

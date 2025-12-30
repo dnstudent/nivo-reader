@@ -371,7 +371,7 @@ def preprocess(
     image: MatLike,
     deskew_method: Literal["nivo", "img2table"],
     configuration: PreprocessConfiguration,
-) -> tuple[MatLike, MatLike, MatLike, MatLike]:
+) -> tuple[MatLike, MatLike, MatLike]:
     """
     Preprocess image: rotate, convert to grayscale, binarize, threshold.
 
@@ -386,8 +386,8 @@ def preprocess(
 
     Returns
     -------
-    tuple[MatLike, MatLike, MatLike, MatLike]
-        tuple of (rotated, rotated_threshold, rotated_binarized, rotated_table_struct) images.
+    tuple[MatLike, MatLike, MatLike]
+        tuple of (rotated, rotated_threshold, rotated_binarized) images.
     """
     # Fix rotation. By default and as a starting point use the img2table method
     image = fix_rotation_image(image)[0]
@@ -427,7 +427,6 @@ def preprocess(
         image,
         thresh,
         binarized_image,
-        my_table_struct(thresh),
     )
 
 
