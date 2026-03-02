@@ -1,4 +1,21 @@
 #!/usr/bin/env python3
+"""
+nivo-reader: a tool to digitize snowfall data tables from the Italian Hydrological Service
+Copyright (C) 2026  Davide Nicoli
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>."""
+
 import argparse
 import logging
 import sys
@@ -190,7 +207,8 @@ def process_images(
 def create_argparser() -> argparse.ArgumentParser:
     """Create and configure argument parser for batch processing."""
     parser = argparse.ArgumentParser(
-        description="Batch process NIVO table images and extract to Excel"
+        prog="nivo-reader",
+        description="""Batch process NIVO table images and extract to Excel.""",
     )
 
     # Input/Output arguments

@@ -1,4 +1,21 @@
-"""Table and line detection utilities for NIVO tables.
+"""
+nivo-reader: a tool to digitize snowfall data tables from the Italian Hydrological Service
+Copyright (C) 2026  Davide Nicoli, Derrick Muheki, Koen Hufkens, Bas Vercruysse, Krishna Kumar Thirukokaranam Chandrasekar, Wim Thiery
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Table and line detection utilities for NIVO tables.
 Parts of the code are taken from MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors.
 """
 
@@ -8,14 +25,14 @@ from cv2.typing import MatLike, Rect
 from scipy.signal import find_peaks
 
 from .configuration.preprocessing import (
-    ThresholdConfiguration,
     LinesDetectionConfiguration,
+    ThresholdConfiguration,
 )
 from .configuration.table_and_cell_detection import (
     LinesExtractionConfiguration,
     WordBlobsCreationConfiguration,
 )
-from .image_processing import ms_threshold, detect_lines, combine_lines
+from .image_processing import combine_lines, detect_lines, ms_threshold
 
 
 def ok_side(x: int, expected_x: int, tol: float) -> bool:
@@ -66,8 +83,10 @@ def try_detect_table_rect(
     bboxes = sorted(
         filter(
             # TODO: explain tol are fixed, why hardcoded?
-            lambda r: ok_side(r[2], expected_table_width, tol=0.1)
-            and ok_side(r[3], expected_table_height, tol=0.1),
+            lambda r: (
+                ok_side(r[2], expected_table_width, tol=0.1)
+                and ok_side(r[3], expected_table_height, tol=0.1)
+            ),
             map(
                 lambda cnt: cv2.boundingRect(cnt),
                 cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0],

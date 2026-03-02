@@ -1,4 +1,22 @@
-"""Excel output utilities for NIVO table data."""
+"""
+nivo-reader: a tool to digitize snowfall data tables from the Italian Hydrological Service
+Copyright (C) 2026  Davide Nicoli
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+Excel output utilities for NIVO table data."""
 
 from pathlib import Path
 from typing import Any
@@ -17,7 +35,7 @@ def write_tables_to_excel(
     output_file: str,
     row_headers: list[str | None],
     row_headers_similarities: list[float | None],
-    low_confidence_threshold: float = 0.7,
+    low_confidence_threshold: float = 0.0,
 ) -> None:
     """Write cell contents and confidence values to Excel file.
 

@@ -4,6 +4,7 @@ version = "0.5.0"
 description = "Libreria per l'estrazione automatica di dati da tabelle NIVO (tabelle meteorologiche storiche) da immagini scansionate"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "AGPL-3.0-or-later"
 authors = [{ name = "Davide Nicoli", email = "davide.nicoli@unimi.it" }]
 classifiers = [
   "Development Status :: 3 - Alpha",

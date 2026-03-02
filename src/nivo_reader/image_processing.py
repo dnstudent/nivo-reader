@@ -1,25 +1,43 @@
-"""Image preprocessing utilities for NIVO table extraction. Parts of the code are taken from MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
+"""
+nivo-reader: a tool to digitize snowfall data tables from the Italian Hydrological Service
+Copyright (C) 2026  Davide Nicoli, Derrick Muheki, Koen Hufkens, Bas Vercruysse, Krishna Kumar Thirukokaranam Chandrasekar, Wim Thiery
 
-from typing import Literal
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+Image preprocessing utilities for NIVO table extraction. Parts of the code are taken from MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
+
 import logging
+from typing import Literal
 
 import cv2
-from cv2.typing import MatLike, Rect
 import numpy as np
-from img2table.document.base.rotation import fix_rotation_image
+from cv2.typing import MatLike, Rect
 from img2table.document.base.rotation import (
-    get_relevant_angles,
     estimate_skew,
+    fix_rotation_image,
     get_connected_components,
+    get_relevant_angles,
 )
 
 from .configuration.preprocessing import (
+    AngleDetectionConfiguration,
     BinarizationConfiguration,
+    LinesCombinationConfiguration,
+    LinesDetectionConfiguration,
     PreprocessConfiguration,
     ThresholdConfiguration,
-    LinesDetectionConfiguration,
-    LinesCombinationConfiguration,
-    AngleDetectionConfiguration,
 )
 
 logger = logging.getLogger("nivo_reader.image_processing")
@@ -158,8 +176,9 @@ def nivo_lines_angle(
 
     vertical_boxes = list(
         filter(
-            lambda box: box[2] > 0
-            and box[3] / box[2] > configuration.line_ratio_threshold,
+            lambda box: (
+                box[2] > 0 and box[3] / box[2] > configuration.line_ratio_threshold
+            ),
             extract_contours_boxes(vertical_lines),
         )
     )

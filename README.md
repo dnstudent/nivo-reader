@@ -61,4 +61,4 @@ Adattare i parametri in base alle proprie esigenze. Il roulo di ciascuno di essi
 
 ## Aknowledgements
 
-Parte del codice è preso o ispirato da MeteoSaver: [https://github.com/VUB-HYDR/MeteoSaver](https://github.com/VUB-HYDR/MeteoSaver)
+Parte del codice è preso o ispirato da MeteoSaver: [https://github.com/VUB-HYDR/MeteoSaver](https://github.com/VUB-HYDR/MeteoSaver). Credits go to the authors: Derrick Muheki, Koen Hufkens, Bas Vercruysse, Krishna Kumar Thirukokaranam Chandrasekar and Wim Thiery.
