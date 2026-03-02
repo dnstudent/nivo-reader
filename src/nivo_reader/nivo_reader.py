@@ -1,10 +1,9 @@
 """Main NIVO table reader module."""
 
 from pathlib import Path
+from typing import Any
 
-import easyocr
 from cv2.typing import MatLike
-
 
 from . import ocr_processing
 from .configuration.preprocessing import (
@@ -22,7 +21,6 @@ from .excel_output import (
 )
 from .image_processing import preprocess
 from .ocr_processing import (
-    easyocr_names_reader,
     read_station_names,
     read_values,
 )
@@ -34,19 +32,26 @@ from .table_detection import (
     try_detect_table_rect,
 )
 
-value_readers = {
+SUPPORTED_OCRS = ["tesseract", "easyocr", "paddleocr"]
+
+VALUE_READERS = {
     reader: getattr(ocr_processing, f"{reader}_values_reader")
-    for reader in ["tesseract", "easyocr"]
+    for reader in SUPPORTED_OCRS
+}
+
+NAME_READERS = {
+    reader: getattr(ocr_processing, f"{reader}_names_reader")
+    for reader in SUPPORTED_OCRS
 }
 
 
 def read_nivo_table(
     original_image: MatLike,
-    excel_out_path,
+    excel_out_dir: Path,
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
     anagrafica: list[str],
-    easyreader: easyocr.Reader,
+    ocr_objects: dict[str, Any],
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,
@@ -70,8 +75,8 @@ def read_nivo_table(
         The expected (width, height) of the table in the image.
     anagrafica : list[str]
         A list of known station names used for matching and validation.
-    easyreader : easyocr.Reader
-        An initialized EasyOCR reader instance.
+    ocr_objects : dict[str, Any]
+        A record of instantiated and tagged reader objects.
     station_char_shape : tuple[int, int], optional
         The approximate shape (width, height) of characters in station names. Default is (12, 10).
     number_char_shape : tuple[int, int], optional
@@ -144,73 +149,88 @@ def read_nivo_table(
             debug_dir,
         )
 
+    name_readers = {
+        reader_tag: NAME_READERS[reader_tag](ocr_object)
+        for reader_tag, ocr_object in ocr_objects.items()
+    }
     # Read station names
-    ocr_names, names_anagrafica_similarities, ocr_name_boxes = read_station_names(
+    names_reading_results = read_station_names(
         binarized_subtable_wo_lines,
         rows_centers,
         cols_separators,
         station_char_shape,
-        easyocr_names_reader(easyreader),
+        name_readers,
         roi_padding,
         anagrafica,
     )
 
     if debug_dir:
-        save_artifacts(
-            {
-                "05_station_names_bboxes": draw_bounding_boxes(
-                    binarized_subtable_wo_lines, ocr_name_boxes
-                )
-            },
-            debug_dir,
-        )
+        for reader_tag in names_reading_results:
+            save_artifacts(
+                {
+                    f"05_station_names_bboxes_{reader_tag}": draw_bounding_boxes(
+                        binarized_subtable_wo_lines,
+                        names_reading_results[reader_tag][2],
+                    )
+                },
+                debug_dir,
+            )
 
     # Read values
-    ocr_values_2d, values_confidences_2d, ocr_value_boxes_2d = read_values(
+    value_readers = {
+        reader_tag: VALUE_READERS[reader_tag](ocr_object)
+        for reader_tag, ocr_object in ocr_objects.items()
+    }
+    # ocr_values_2d, values_confidences_2d, ocr_value_boxes_2d = read_values(
+    value_reading_results = read_values(
         binarized_subtable_wo_lines,
         rows_centers,
         cols_separators,
         number_char_shape,
-        [value_readers["easyocr"](easyreader)],
-        [0.0],
+        value_readers,
         roi_padding,
         extra_width,
     )
 
-    # Flatten results for Excel output and debug
-    ocr_values = [val for col in ocr_values_2d for val in col]
-    values_confidences = [conf for col in values_confidences_2d for conf in col]
-    ocr_value_boxes = [box for col in ocr_value_boxes_2d for box in col]
-
-    if debug_dir:
-        save_artifacts(
-            {
-                "06_values_bboxes": draw_straight_lines(
-                    draw_bounding_boxes(
-                        binarized_subtable_wo_lines,
-                        ocr_value_boxes,
-                        thickness=1,
-                    ),
-                    rows_centers,
-                    "horizontal",
-                )
-            },
-            debug_dir,
+    for reader_tag in value_reading_results:
+        ocr_values_2d, values_confidences_2d, ocr_value_boxes_2d = (
+            value_reading_results[reader_tag]
         )
+        ocr_names, names_anagrafica_similarities, _ = names_reading_results[reader_tag]
+        # Flatten results for Excel output and debug
+        ocr_values = [val for col in ocr_values_2d for val in col]
+        values_confidences = [conf for col in values_confidences_2d for conf in col]
+        ocr_value_boxes = [box for col in ocr_value_boxes_2d for box in col]
 
-    # Assign grid coordinates
-    values_coordinates: list[tuple[int, int]] = []
-    for c_idx, col in enumerate(ocr_values_2d):
-        for r_idx, _ in enumerate(col):
-            values_coordinates.append((r_idx, c_idx))
+        if debug_dir:
+            save_artifacts(
+                {
+                    f"06_values_bboxes_{reader_tag}": draw_straight_lines(
+                        draw_bounding_boxes(
+                            binarized_subtable_wo_lines,
+                            ocr_value_boxes,
+                            thickness=1,
+                        ),
+                        rows_centers,
+                        "horizontal",
+                    )
+                },
+                debug_dir,
+            )
 
-    # Write to Excel
-    write_tables_to_excel(
-        ocr_values,
-        values_confidences,
-        values_coordinates,
-        str(excel_out_path),
-        ocr_names,
-        names_anagrafica_similarities,
-        low_confidence_threshold,
-    )
+        # Assign grid coordinates
+        values_coordinates: list[tuple[int, int]] = []
+        for c_idx, col in enumerate(ocr_values_2d):
+            for r_idx, _ in enumerate(col):
+                values_coordinates.append((r_idx, c_idx))
+
+        # Write to Excel
+        write_tables_to_excel(
+            ocr_values,
+            values_confidences,
+            values_coordinates,
+            str(excel_out_dir / f"{reader_tag}.xlsx"),
+            ocr_names,
+            names_anagrafica_similarities,
+            low_confidence_threshold,
+        )

@@ -3,32 +3,30 @@ name = "nivo-reader"
 version = "0.5.0"
 description = "Libreria per l'estrazione automatica di dati da tabelle NIVO (tabelle meteorologiche storiche) da immagini scansionate"
 readme = "README.md"
-authors = [
-    { name = "Davide Nicoli", email = "davide.nicoli@unimi.it" }
+requires-python = ">=3.12"
+authors = [{ name = "Davide Nicoli", email = "davide.nicoli@unimi.it" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3"
 ]
-requires-python = ">=3.12, <3.14"
 dependencies = [
-    "easyocr>=1.7.3",
-    "fancy-dataclass>=0.10.1",
-    "fastexcel>=0.16.0",
-    "img2table>=1.4.2",
-    "numpy>=2.3.5",
-    "opencv-contrib-python-headless>=4.11.0.86",
-    "openpyxl>=3.1.5",
-    "pillow>=12.0.0",
-    "polars>=1.35.2",
-    "polars-distance>=0.5.3",
-    "pytesseract>=0.3.13",
-    "scikit-learn>=1.7.2",
-    "scipy>=1.16.3",
-    "tqdm>=4.67.1",
-]
-classifiers = ["Development Status :: 3 - Alpha", "Programming Language :: Python :: 3", "Intended Audience :: Science/Research"]
-
-[tool.pyrefly]
-project-includes = [
-    "**/*.py*",
-    "**/*.ipynb",
+  "easyocr>=1.7.3",
+  "fancy-dataclass>=0.10.2",
+  "fastexcel>=0.16.0",
+  "img2table>=1.4.2",
+  "numpy>=2.3.5",
+  "opencv-contrib-python-headless>=4.11.0.86",
+  "openpyxl>=3.1.5",
+  "paddleocr[all]>=3.4.0",
+  "paddlepaddle>=3.3.0",
+  "pillow>=12.0.0",
+  "polars>=1.35.2",
+  "polars-distance>=0.5.3",
+  "pytesseract>=0.3.13",
+  "scikit-learn>=1.7.2",
+  "scipy>=1.16.3",
+  "tqdm>=4.67.1",
 ]
 
 [project.urls]
@@ -37,19 +35,16 @@ Repository = "https://github.com/dnstudent/nivo-reader"
 [project.scripts]
 nivo-reader = "nivo_reader.cli:main"
 
+[dependency-groups]
+dev = [
+  "ipykernel>=7.1.0",
+  "ipywidgets>=8.1.8",
+  "matplotlib>=3.10.7",
+]
+
 [build-system]
 requires = ["uv_build>=0.9.9,<0.10.0"]
 build-backend = "uv_build"
-
-[dependency-groups]
-dev = [
-    "ipykernel>=7.1.0",
-    "ipywidgets>=8.1.8",
-    "matplotlib>=3.10.7",
-]
-
-[tool.uv.sources]
-easyocr = { git = "https://github.com/dnstudent/EasyOCR" }
 
 [tool.basedpyright]
 reportUnknownArgumentType = "none"
@@ -60,3 +55,12 @@ reportExplicitAny = "none"
 reportUnknownParameterType = "none"
 reportMissingParameterType = "none"
 reportMissingTypeStubs = "none"
+
+[tool.pyrefly]
+project-includes = [
+  "**/*.py*",
+  "**/*.ipynb",
+]
+
+[tool.uv.sources]
+easyocr = { git = "https://github.com/dnstudent/EasyOCR" }

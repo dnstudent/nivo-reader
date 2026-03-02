@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 import argparse
+import logging
 import sys
 import warnings
 from itertools import chain
 from pathlib import Path
-import logging
 
 import easyocr
 import numpy as np
+import paddleocr
 import polars as pl
 from PIL import Image
 from tqdm import tqdm
@@ -73,6 +74,7 @@ def process_images(
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
     anagrafica: list[str],
+    ocr_engines: list[str],
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,
@@ -91,6 +93,7 @@ def process_images(
         clips: (up, down, left, right) clipping margins
         table_shape: (width, height) of table
         anagrafica: List of known station names
+        ocr_engines: List of OCR engines to use. Available engines: tesseract, easyocr, paddleocr
         station_char_shape: Character dimensions for station names
         number_char_shape: Character dimensions for numbers
         roi_padding: ROI padding in pixels
@@ -131,8 +134,15 @@ def process_images(
 
     print("Initializing OCR reader...")
 
-    easyreader = easyocr.Reader(lang_list=["it"])
-    # paddletextrecog = None #paddleocr.TextRecognition(model_name="latin_PP-OCRv5_mobile_rec")
+    ocrs = {}
+    if "easyreader" in ocr_engines:
+        ocrs["easyreader"] = easyocr.Reader(lang_list=["it"])
+    if "paddleocr" in ocr_engines:
+        ocrs["paddleocr"] = paddleocr.TextRecognition(
+            model_name="latin_PP-OCRv5_mobile_rec"
+        )
+    if "tesseract" in ocr_engines:
+        ocrs["tesseract"] = None
 
     print(f"Processing {len(images_to_process)} images...")
     # Process images with progress bar
@@ -158,7 +168,7 @@ def process_images(
                 clips,
                 table_shape,
                 anagrafica,
-                easyreader,
+                ocrs,
                 station_char_shape,
                 number_char_shape,
                 roi_padding,
@@ -287,6 +297,13 @@ def create_argparser() -> argparse.ArgumentParser:
         help="Comma-separated list of image file formats to process (default: png,jpg,jpeg,gif)",
     )
 
+    # OCR
+    _ = parser.add_argument(
+        "--ocr-engines",
+        type=str,
+        default="tesseract,easyocr,paddleocr",
+        help="Comma-separated list of OCR engines to use. Available engines: tesseract, easyocr, paddleocr. Default: tesseract,easyocr,paddleocr",
+    )
     return parser
 
 
@@ -329,6 +346,7 @@ def main():
         sys.exit(1)
 
     image_formats = str(args.image_formats).split(",")
+    ocr_engines = str(args.ocr_engines).split(",")
 
     # Process images
     process_images(
@@ -346,6 +364,7 @@ def main():
         extra_width=args.extra_width,
         low_confidence_threshold=args.low_confidence_threshold,
         overwrite=args.overwrite,
+        ocr_engines=ocr_engines,
     )
 
 

@@ -3,7 +3,7 @@
 Il pacchetto può essere installato usando `uv` direttamente dal repository GitHub:
 
 ```bash
-uv pip git+https://github.com/dnstudent/nivo-reader.git
+uv pip install git+https://github.com/dnstudent/nivo-reader.git
 ```
 
 oppure con `pip`:
@@ -23,6 +23,8 @@ pip install -e .
 
 ## Utilizzo
 
+Da terminale lanciare un comando sulla falsariga del seguente:
+
 ```bash
 nivo-reader \
   folder/ \
@@ -34,24 +36,27 @@ nivo-reader \
   [opzioni aggiuntive]
 ```
 
+Adattare i parametri in base alle proprie esigenze. Il roulo di ciascuno di essi è spiegato nella sezione sottostante.
+
 ### Opzioni
 
 #### Obbligatorie
 
-- `images_dir`: Directory contenente le immagini da processare
-- `-o, --output-dir`: Directory output per file Excel
-- `--clips`: Quattro interi (UP DOWN LEFT RIGHT) per clipping (zone da rimuovere dalla tabella rispettivamente da sopra, sotto, sinistra, destra per isolare la sottotabella contenente solo nomi stazione e dati). Un buon default è "280 0 0 0"
-- `--table-shape`: Due interi (WIDTH HEIGHT) per dimensioni tabella (approssimative). Un buon default è "2050 1385"
-- `--anagrafica-file`: File excel con nomi stazioni (in una colonna chiamata esattamente "Stazione")
+- `images_dir`: Directory contenente le immagini da processare. Possono essere distribuite in un numero arbitrario di sottocartelle; la struttura della directory viene conservata nell'output.
+- `-o, --output-dir`: Directory per i file Excel in output
+- `--clips`: Quattro interi (UP DOWN LEFT RIGHT) per il "clipping": lunghezze (in pixel) da rimuovere partendo dai lati dalla tabella rispettivamente da sopra, sotto, sinistra, destra per rimouvere le intestazioni ed eventuali altre decorazioni che non sono da passare all'OCR. Un buon default è "280 0 0 0"
+- `--table-shape`: Due interi (WIDTH HEIGHT) che danno le dimensioni approssimative delle tabelle rappresentate nelle immagini, in pixel. Un buon default è "2050 1385"
+- `--anagrafica-file`: File excel con i nomi delle stazioni (in una colonna chiamata esattamente "Stazione")
 
 #### Opzionali
 
 - `-d, --debug-dir`: Directory base per artefatti debug (celle rilevate ecc)
-- `--station-char-shape`: Dimensioni caratteri stazioni (default: 12 10)
-- `--number-char-shape`: Dimensioni caratteri numeri (default: 12 20)
-- `--low-confidence-threshold`: Soglia confidenza (default: 0.7)
-- `--image-formats`: Formati immagine da processare, separati da virgola (default: png,jpg,jpeg,gif)
-- `--overwrite`: Sovrascrivi file già processati
+- `--station-char-shape`: Dimensioni approssimative dei caratteri dei nomi stazione, in pixel (WIDTH HEIGHT; default: 12 10)
+- `--number-char-shape`: Dimensioni approssimative dei caratteri dei numeri, in pixel (WIDTH HEIGHT; default: 12 20)
+<!--- `--low-confidence-threshold`: Soglia di confidenza sotto la  (default: 0.7)-->
+- `--image-formats`: Formati delle immagini da processare, separati da virgola (default: png,jpg,jpeg,gif)
+- `--overwrite`: Sovrascrivi file già processati; se questa flag non viene usata, le immagini già processate vengono saltate
+- `--ocr-engines tesseract,easyocr,paddleocr`: OCR da usare, separati da virgola. Per ora sono supportati tesseract, easyocr e paddleocr
 
 
 ## Aknowledgements

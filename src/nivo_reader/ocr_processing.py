@@ -1,12 +1,14 @@
 """Parts of the code were inspired by MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
 
-from itertools import takewhile, pairwise, batched
-from string import ascii_letters
 import logging
+from itertools import batched, pairwise, takewhile
+from string import ascii_letters
 from typing import Any, Callable
 
+import cv2
 import easyocr
 import numpy as np
+import paddleocr
 import polars as pl
 import polars_distance as pld  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import pytesseract
@@ -16,20 +18,22 @@ from numpy.typing import NDArray
 from .configuration.table_and_cell_detection import (
     WordBlobsCreationConfiguration,
 )
+from .excel_output import draw_bounding_boxes
 from .image_processing import extract_contours_boxes
 from .roi_utilities import (
+    autocrop_roi,
     easyrect2rect,
     extract,
-    rect2easy,
-    pad_roi,
-    autocrop_roi,
     generate_roi_grid,
+    pad_roi,
     prepare_value_roi,
+    rect2easy,
 )
 from .table_detection import create_word_blobs
-from .excel_output import draw_bounding_boxes
 
 logger = logging.getLogger(__name__)
+
+ALLOWED_LETTERS = f"{ascii_letters}()'/áàóòúùèéìi"
 
 
 def filter_by_size(input_boxes: list[Rect], char_shape: tuple[int, int]) -> list[Rect]:
@@ -473,7 +477,7 @@ def easyocr_names_reader(ocr: easyocr.Reader):
                 process_easyocr_readtext_result(
                     ocr.readtext(  # type: ignore  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
                         extract(image, roi),
-                        allowlist=f"{ascii_letters}()' /áàóòúùèéìi",
+                        allowlist=ALLOWED_LETTERS,
                         paragraph=False,
                         output_format="dict",
                     )
@@ -535,28 +539,33 @@ def easyocr_values_reader(ocr: easyocr.Reader):
     return _reader
 
 
-# def paddleocr_values_reader(ocr: paddleocr.TextRecognition):
-#     def _reader(
-#         image: MatLike, rois: list[Rect]
-#     ) -> tuple[list[str | None], list[float | None], list[Rect]]:
-#         if image.ndim == 2:
-#             image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-#         crops = list(
-#             map(
-#                 lambda roi: extract(
-#                     image,
-#                     roi,
-#                 ),
-#                 rois,
-#             )
-#         )
-#         raw_results: list[dict[str, Any]] = ocr.predict(input=crops, batch_size=8)
-#         return (
-#             [r.get("rec_text") for r in raw_results],
-#             [r.get("rec_score") for r in raw_results],
-#             rois,
-#         )
-#     return _reader
+def paddleocr_values_reader(ocr: paddleocr.TextRecognition):
+    def _reader(
+        image: MatLike, rois: list[Rect]
+    ) -> tuple[list[str | None], list[float | None], list[Rect]]:
+        if image.ndim == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        crops = list(
+            map(
+                lambda roi: extract(
+                    image,
+                    roi,
+                ),
+                rois,
+            )
+        )
+        raw_results: list[dict[str, Any]] = ocr.predict(input=crops, batch_size=8)  # pyright: ignore[reportUnknownMemberType]
+        return (
+            [r.get("rec_text") for r in raw_results],
+            [r.get("rec_score") for r in raw_results],
+            rois,
+        )
+
+    return _reader
+
+
+def paddleocr_names_reader(ocr: paddleocr.TextRecognition):
+    return paddleocr_values_reader(ocr)
 
 
 def process_tesseract_cell_result(result: dict[str, Any], roi: Rect) -> dict[str, Any]:
@@ -641,17 +650,50 @@ def tesseract_values_reader(_: None):
     return _reader
 
 
+def tesseract_names_reader(_: None):
+    def _reader(image: MatLike, rois: list[Rect]):
+        crops = list(map(lambda roi: extract(image, roi), rois))
+        recognition_results: tuple[list[str | None], list[float | None], list[Rect]] = (
+            [],
+            [],
+            [],
+        )
+        for crop, roi in zip(crops, rois):
+            processed_result = process_tesseract_cell_result(
+                pytesseract.image_to_data(  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
+                    crop,
+                    config=f"--psm 8 -c tessedit_char_whitelist={ascii_letters}()\\'/áàóòúùèéìi --oem 1",
+                    output_type="dict",
+                ),
+                roi,
+            )
+            recognition_results[0].append(processed_result["text"])
+            recognition_results[1].append(processed_result["confident"])
+            if processed_result["boxes"]:
+                recognition_results[2].append(processed_result["boxes"])
+            else:
+                recognition_results[2].append(roi)
+
+        return recognition_results
+
+    return _reader
+
+
 def read_station_names(
     image: MatLike,
     rows_centers: list[int],
     column_separators: list[int],
     char_shape: tuple[int, int],
-    reader: Callable[
-        [MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]
+    readers: dict[
+        str,
+        Callable[
+            [MatLike, list[Rect]],
+            tuple[list[str | None], list[float | None], list[Rect]],
+        ],
     ],
     roi_padding: int,
     anagrafica: list[str],
-) -> tuple[list[str | None], list[float | None], list[Rect]]:
+) -> dict[str, tuple[list[str | None], list[float | None], list[Rect]]]:
     """
     Read station names from the first column of the table.
 
@@ -665,8 +707,8 @@ def read_station_names(
         The x-coordinates of the column separators.
     char_shape : tuple[int, int]
         The approximate shape (width, height) of a character.
-    reader : Callable[[MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]]
-        A callable that takes an image and a list of ROIs and returns the recognized text, confidences, and bounding boxes.
+    readers : dict[str, Callable[[MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]]]
+        A dict of tagged callables that takes an image and a list of ROIs and returns the recognized text, confidences, and bounding boxes.
     roi_padding : int
         The amount of padding to add around each ROI.
     anagrafica : list[str]
@@ -694,24 +736,31 @@ def read_station_names(
     )
 
     names_wboxes = sorted(names_wboxes, key=lambda b: b[1])
-    ocr_names, names_confidences, ocr_name_boxes = reader(image, names_wboxes)
+    results = {}
+    for reader_tag, reader in readers.items():
+        ocr_names, names_confidences, ocr_name_boxes = reader(image, names_wboxes)
 
-    names_rows = compute_name_rows(ocr_name_boxes)
-    ocr_names: list[str | None] = np.array(ocr_names)[names_rows].tolist()
-    names_confidences: list[float | None] = np.array(names_confidences)[
-        names_rows
-    ].tolist()
-    ocr_name_boxes: list[Rect] = np.array(ocr_name_boxes)[names_rows].tolist()
+        names_rows = compute_name_rows(ocr_name_boxes)
+        ocr_names: list[str | None] = np.array(ocr_names)[names_rows].tolist()
+        names_confidences: list[float | None] = np.array(names_confidences)[
+            names_rows
+        ].tolist()
+        ocr_name_boxes: list[Rect] = np.array(ocr_name_boxes)[names_rows].tolist()
 
-    anagrafica_closest = associate_closest_station_names(ocr_names, anagrafica)
-    anagrafica_names: list[str | None] = list(
-        map(lambda d: d["name"], anagrafica_closest)
-    )
-    anagrafica_similarities: list[float | None] = list(
-        map(lambda d: float(d["string_similarity"]), anagrafica_closest)
-    )
+        anagrafica_closest = associate_closest_station_names(ocr_names, anagrafica)
+        anagrafica_names: list[str | None] = list(
+            map(lambda d: d["name"], anagrafica_closest)
+        )
+        anagrafica_similarities: list[float | None] = list(
+            map(lambda d: float(d["string_similarity"]), anagrafica_closest)
+        )
+        results[reader_tag] = (
+            anagrafica_names,
+            anagrafica_similarities,
+            ocr_name_boxes,
+        )
 
-    return anagrafica_names, anagrafica_similarities, ocr_name_boxes
+    return results
 
 
 def populate_with_reading_results(
@@ -721,7 +770,6 @@ def populate_with_reading_results(
     ],
     image: MatLike,
     rois: list[Rect],
-    threshold: float,
 ) -> None:
     """
     Fill the results tuple with OCR readings, only when the confidence is above the threshold.
@@ -736,8 +784,6 @@ def populate_with_reading_results(
         The image to process.
     rois : list[Rect]
         The list of ROIs to read.
-    threshold : float
-        The confidence threshold. Results with confidence below this value are ignored.
 
     Notes
     -----
@@ -767,8 +813,7 @@ def populate_with_reading_results(
         confidence = confidences[filtered_idx]
         box = boxes[filtered_idx]
 
-        # Only fill in results if confidence is above threshold
-        if confidence is not None and confidence > threshold:
+        if confidence is not None:
             if results[0][original_idx] is None:  # Double-check it's still None
                 results[0][original_idx] = reading
                 results[1][original_idx] = confidence
@@ -787,16 +832,18 @@ def read_values(
     rows_centers: list[int],
     column_separators: list[int],
     number_char_shape: tuple[int, int],
-    readers: list[
+    readers: dict[
+        str,
         Callable[
             [MatLike, list[Rect]],
             tuple[list[str | None], list[float | None], list[Rect]],
-        ]
+        ],
     ],
-    confidence_thresholds: list[float],
     roi_padding: int,
     extra_width: int,
-) -> tuple[list[list[str | None]], list[list[float | None]], list[list[Rect]]]:
+) -> dict[
+    str, tuple[list[list[str | None]], list[list[float | None]], list[list[Rect]]]
+]:
     """
     Read values from the table cells using one or more OCR readers.
 
@@ -812,8 +859,6 @@ def read_values(
         The approximate shape (width, height) of a number character.
     readers : list[Callable[[MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]]]
         A list of OCR reader callables to attempt in order.
-    confidence_thresholds : list[float]
-        A list of confidence thresholds corresponding to each reader.
     roi_padding : int
         The amount of padding to add around each ROI.
     extra_width : int
@@ -848,19 +893,18 @@ def read_values(
         )
     )
 
-    results_flat: tuple[list[str | None], list[float | None], list[Rect]] = (
-        [None] * len(rois_flat),
-        [None] * len(rois_flat),
-        rois_flat,
-    )
+    results = {}
+    for reader_tag, reader in readers.items():
+        results_flat: tuple[list[str | None], list[float | None], list[Rect]] = (
+            [None] * len(rois_flat),
+            [None] * len(rois_flat),
+            rois_flat,
+        )
+        populate_with_reading_results(results_flat, reader, image, rois_flat)
 
-    while readers:
-        reader = readers.pop(0)
-        threshold = confidence_thresholds.pop(0)
-        populate_with_reading_results(results_flat, reader, image, rois_flat, threshold)
-
-    return (
-        _grouped(results_flat[0], n_rows),
-        _grouped(results_flat[1], n_rows),
-        _grouped(results_flat[2], n_rows),
-    )
+        results[reader_tag] = (
+            _grouped(results_flat[0], n_rows),
+            _grouped(results_flat[1], n_rows),
+            _grouped(results_flat[2], n_rows),
+        )
+    return results
