@@ -19,7 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 Parts of the code were inspired by MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
 
 import logging
-from itertools import batched, pairwise, takewhile
+from itertools import pairwise, takewhile
 from string import ascii_letters
 from typing import Any, Callable
 
@@ -697,6 +697,7 @@ def tesseract_names_reader(_: None):
     return _reader
 
 
+# TODO: move to nivo-specific section
 def read_station_names(
     image: MatLike,
     rows_centers: list[int],
@@ -710,8 +711,7 @@ def read_station_names(
         ],
     ],
     roi_padding: int,
-    anagrafica: list[str],
-) -> dict[str, tuple[list[str | None], list[float | None], list[Rect]]]:
+) -> pl.DataFrame:
     """
     Read station names from the first column of the table.
 
@@ -729,16 +729,11 @@ def read_station_names(
         A dict of tagged callables that takes an image and a list of ROIs and returns the recognized text, confidences, and bounding boxes.
     roi_padding : int
         The amount of padding to add around each ROI.
-    anagrafica : list[str]
-        A list of known station names to match against.
 
     Returns
     -------
-    tuple[list[str | None], list[float | None], list[Rect]]
-        A tuple containing:
-        - A list of the matched station names from `anagrafica`.
-        - A list of the similarity scores for the matches.
-        - A list of the bounding boxes for the recognized names.
+    pl.DataFrame
+        A DataFrame with columns "content", "confidence", and "bounding_box" containing the recognized values, confidences, and bounding boxes.
 
     Notes
     -----
@@ -754,7 +749,7 @@ def read_station_names(
     )
 
     names_wboxes = sorted(names_wboxes, key=lambda b: b[1])
-    results = {}
+    results: dict[str, pl.DataFrame] = {}
     for reader_tag, reader in readers.items():
         ocr_names, names_confidences, ocr_name_boxes = reader(image, names_wboxes)
 
@@ -765,20 +760,35 @@ def read_station_names(
         ].tolist()
         ocr_name_boxes: list[Rect] = np.array(ocr_name_boxes)[names_rows].tolist()
 
-        anagrafica_closest = associate_closest_station_names(ocr_names, anagrafica)
-        anagrafica_names: list[str | None] = list(
-            map(lambda d: d["name"], anagrafica_closest)
-        )
-        anagrafica_similarities: list[float | None] = list(
-            map(lambda d: float(d["string_similarity"]), anagrafica_closest)
-        )
-        results[reader_tag] = (
-            anagrafica_names,
-            anagrafica_similarities,
-            ocr_name_boxes,
+        results[reader_tag] = pl.DataFrame(
+            [
+                pl.Series("content", ocr_names, dtype=pl.Utf8),
+                pl.Series("confidence", names_confidences, dtype=pl.Float64),
+                pl.Series(
+                    "bounding_box",
+                    ocr_name_boxes,
+                    dtype=pl.Struct(
+                        [
+                            pl.Field("x", pl.Int32),
+                            pl.Field("y", pl.Int32),
+                            pl.Field("width", pl.Int32),
+                            pl.Field("height", pl.Int32),
+                        ]
+                    ),
+                ),
+            ]
+        ).with_columns(
+            row=pl.arange(0, len(ocr_names), dtype=pl.Int32),
+            column=pl.lit(0, dtype=pl.Int32),
         )
 
-    return results
+    return pl.concat(
+        [
+            df.with_columns(reader=pl.lit(key, dtype=pl.Utf8))
+            for key, df in results.items()
+        ],
+        how="vertical",
+    )
 
 
 def populate_with_reading_results(
@@ -838,13 +848,7 @@ def populate_with_reading_results(
                 results[2][original_idx] = box
 
 
-def _grouped(values: list[Any], n: int) -> list[list[Any]]:
-    """
-    Group values into batches of size n.
-    """
-    return list(map(list, batched(values, n)))
-
-
+# TODO: move to nivo-specific section
 def read_values(
     image: MatLike,
     rows_centers: list[int],
@@ -859,9 +863,7 @@ def read_values(
     ],
     roi_padding: int,
     extra_width: int,
-) -> dict[
-    str, tuple[list[list[str | None]], list[list[float | None]], list[list[Rect]]]
-]:
+) -> pl.DataFrame:
     """
     Read values from the table cells using one or more OCR readers.
 
@@ -884,16 +886,16 @@ def read_values(
 
     Returns
     -------
-    tuple[list[list[str | None]], list[list[float | None]], list[list[Rect]]]
-        A tuple containing:
-        - A 2D list of the recognized values [col][row].
-        - A 2D list of the confidences [col][row].
-        - A 2D list of the bounding boxes [col][row].
+    pl.DataFrame
+        A DataFrame with columns "content", "confidence", and "bounding_box" containing the recognized values, confidences, and bounding boxes.
     """
     rois_grid = generate_roi_grid(
         rows_centers, column_separators[1:], number_char_shape[1], extra_width
     )
     n_rows = len(rows_centers)
+    n_cols = len(column_separators) - 2
+
+    assert n_cols >= 1, f"Expected at least one column. Got {n_cols}"
 
     # Flatten for processing
     rois_flat = [roi for col in rois_grid for roi in col]
@@ -911,7 +913,7 @@ def read_values(
         )
     )
 
-    results = {}
+    results: dict[str, pl.DataFrame] = {}
     for reader_tag, reader in readers.items():
         results_flat: tuple[list[str | None], list[float | None], list[Rect]] = (
             [None] * len(rois_flat),
@@ -920,9 +922,31 @@ def read_values(
         )
         populate_with_reading_results(results_flat, reader, image, rois_flat)
 
-        results[reader_tag] = (
-            _grouped(results_flat[0], n_rows),
-            _grouped(results_flat[1], n_rows),
-            _grouped(results_flat[2], n_rows),
+        results[reader_tag] = pl.DataFrame(
+            [
+                pl.Series("content", results_flat[0], dtype=pl.Utf8),
+                pl.Series("confidence", results_flat[1], dtype=pl.Float64),
+                pl.Series(
+                    "bounding_box",
+                    results_flat[2],
+                    dtype=pl.Struct(
+                        [
+                            pl.Field("x", pl.Int32),
+                            pl.Field("y", pl.Int32),
+                            pl.Field("width", pl.Int32),
+                            pl.Field("height", pl.Int32),
+                        ]
+                    ),
+                ),
+            ]
+        ).with_columns(
+            row=pl.concat([pl.arange(0, n_rows, dtype=pl.Int32)] * n_cols),
+            column=pl.arange(0, n_cols, dtype=pl.Int32).repeat_by(n_rows).explode(),
         )
-    return results
+
+    return pl.concat(
+        [
+            df.with_columns(reader=pl.lit(key, dtype=pl.Utf8))
+            for key, df in results.items()
+        ]
+    )

@@ -21,6 +21,7 @@ Main NIVO table reader module."""
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from cv2.typing import MatLike
 
 from . import ocr_processing
@@ -35,7 +36,6 @@ from .excel_output import (
     draw_bounding_boxes,
     draw_straight_lines,
     save_artifacts,
-    write_tables_to_excel,
 )
 from .image_processing import preprocess
 from .ocr_processing import (
@@ -65,19 +65,17 @@ NAME_READERS = {
 
 def read_nivo_table(
     original_image: MatLike,
-    excel_out_dir: Path,
+    output_dir: Path,
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
-    anagrafica: list[str],
     ocr_objects: dict[str, Any],
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,
     nchars_threshold: int = 30,
     extra_width: int = 6,
-    low_confidence_threshold: float = 0.7,
     debug_dir: Path | None = None,
-) -> None:
+) -> pl.DataFrame:
     """
     Extract NIVO table data from image and write to Excel.
 
@@ -128,14 +126,14 @@ def read_nivo_table(
     )
 
     # Detect table rectangle
-    rect = try_detect_table_rect(image, table_shape, ThresholdConfiguration())
+    image_region = try_detect_table_rect(image, table_shape, ThresholdConfiguration())
 
-    if rect is None:
+    if image_region is None:
         raise ValueError("Could not detect table rectangle in image")
 
     # Cut out table
-    _, binarized_subtable = cut_out_tables(binarized_image, rect, clips)
-    _, threshold_subtable = cut_out_tables(threshold_image, rect, clips)
+    _, binarized_subtable = cut_out_tables(binarized_image, image_region, clips)
+    _, threshold_subtable = cut_out_tables(threshold_image, image_region, clips)
 
     # Remove lines
     binarized_subtable_wo_lines = remove_lines_from_image(
@@ -153,7 +151,7 @@ def read_nivo_table(
     if debug_dir:
         save_artifacts(
             {
-                "01_table_rect": draw_bounding_boxes(debug_image, [rect]),  # pyright: ignore[reportPossiblyUnboundVariable]
+                "01_table_rect": draw_bounding_boxes(debug_image, [image_region]),  # pyright: ignore[reportPossiblyUnboundVariable]
                 "02_binarized_subtable": binarized_subtable,
                 "03_binarized_subtable_wo_lines": binarized_subtable_wo_lines,
                 "04_lines": draw_straight_lines(
@@ -167,11 +165,11 @@ def read_nivo_table(
             debug_dir,
         )
 
+    # Read station names
     name_readers = {
         reader_tag: NAME_READERS[reader_tag](ocr_object)
         for reader_tag, ocr_object in ocr_objects.items()
     }
-    # Read station names
     names_reading_results = read_station_names(
         binarized_subtable_wo_lines,
         rows_centers,
@@ -179,27 +177,27 @@ def read_nivo_table(
         station_char_shape,
         name_readers,
         roi_padding,
-        anagrafica,
     )
 
-    if debug_dir:
-        for reader_tag in names_reading_results:
-            save_artifacts(
-                {
-                    f"05_station_names_bboxes_{reader_tag}": draw_bounding_boxes(
-                        binarized_subtable_wo_lines,
-                        names_reading_results[reader_tag][2],
-                    )
-                },
-                debug_dir,
-            )
+    # if debug_dir:
+    #     for reader_tag in ocr_objects.keys():
+    #         save_artifacts(
+    #             {
+    #                 f"05_station_names_bboxes_{reader_tag}": draw_bounding_boxes(
+    #                     binarized_subtable_wo_lines,
+    #                     names_reading_results.filter(pl.col("reader").eq(reader_tag))[
+    #                         "bounding_box"
+    #                     ].to_list(),
+    #                 )
+    #             },
+    #             debug_dir,
+    #         )
 
     # Read values
     value_readers = {
         reader_tag: VALUE_READERS[reader_tag](ocr_object)
         for reader_tag, ocr_object in ocr_objects.items()
     }
-    # ocr_values_2d, values_confidences_2d, ocr_value_boxes_2d = read_values(
     value_reading_results = read_values(
         binarized_subtable_wo_lines,
         rows_centers,
@@ -210,45 +208,11 @@ def read_nivo_table(
         extra_width,
     )
 
-    for reader_tag in value_reading_results:
-        ocr_values_2d, values_confidences_2d, ocr_value_boxes_2d = (
-            value_reading_results[reader_tag]
-        )
-        ocr_names, names_anagrafica_similarities, _ = names_reading_results[reader_tag]
-        # Flatten results for Excel output and debug
-        ocr_values = [val for col in ocr_values_2d for val in col]
-        values_confidences = [conf for col in values_confidences_2d for conf in col]
-        ocr_value_boxes = [box for col in ocr_value_boxes_2d for box in col]
+    value_reading_results = value_reading_results.with_columns(
+        column=pl.col("column") + 1
+    )
 
-        if debug_dir:
-            save_artifacts(
-                {
-                    f"06_values_bboxes_{reader_tag}": draw_straight_lines(
-                        draw_bounding_boxes(
-                            binarized_subtable_wo_lines,
-                            ocr_value_boxes,
-                            thickness=1,
-                        ),
-                        rows_centers,
-                        "horizontal",
-                    )
-                },
-                debug_dir,
-            )
-
-        # Assign grid coordinates
-        values_coordinates: list[tuple[int, int]] = []
-        for c_idx, col in enumerate(ocr_values_2d):
-            for r_idx, _ in enumerate(col):
-                values_coordinates.append((r_idx, c_idx))
-
-        # Write to Excel
-        write_tables_to_excel(
-            ocr_values,
-            values_confidences,
-            values_coordinates,
-            str(excel_out_dir / f"{reader_tag}.xlsx"),
-            ocr_names,
-            names_anagrafica_similarities,
-            low_confidence_threshold,
-        )
+    df = pl.concat([names_reading_results, value_reading_results], how="vertical")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    df.write_json(output_dir / "digitization.json")
+    return df

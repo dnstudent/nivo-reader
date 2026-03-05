@@ -26,11 +26,10 @@ from pathlib import Path
 import easyocr
 import numpy as np
 import paddleocr
-import polars as pl
 from PIL import Image
 from tqdm import tqdm
 
-from .nivo_reader import read_nivo_table
+from nivo_reader.nivo_reader import read_nivo_table
 
 # Suppress pin_memory warnings from PyTorch/EasyOCR
 warnings.filterwarnings("ignore", message=".*pin_memory.*")
@@ -55,7 +54,9 @@ def load_image(image_path: Path) -> np.ndarray:
         raise ValueError(f"Could not load image {image_path}: {e}")
 
 
-def excel_out(output_dir: Path, image_path: Path, images_dir: Path) -> Path:
+def scan_output_dir(
+    root_output_dir: Path, scan_input_path: Path, scans_dir: Path
+) -> Path:
     """Generate output Excel file path for an image.
 
     Args:
@@ -66,7 +67,7 @@ def excel_out(output_dir: Path, image_path: Path, images_dir: Path) -> Path:
     Returns:
         Path to the output Excel file
     """
-    return output_dir / Path(str(image_path.relative_to(images_dir)) + ".xlsx")
+    return root_output_dir / scan_input_path.relative_to(scans_dir)
 
 
 def compose_debug_dir(debug_dir: Path, image_path: Path, images_dir: Path) -> Path:
@@ -83,21 +84,19 @@ def compose_debug_dir(debug_dir: Path, image_path: Path, images_dir: Path) -> Pa
     return debug_dir / image_path.relative_to(images_dir) / ""
 
 
-def process_images(
+def digitize_scans(
     images_dir: Path,
     image_formats: list[str],
     output_dir: Path,
     debug_dir: Path,
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
-    anagrafica: list[str],
     ocr_engines: list[str],
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,
     nchars_threshold: int = 20,
     extra_width: int = 6,
-    low_confidence_threshold: float = 0.7,
     overwrite: bool = False,
 ) -> None:
     """Process multiple NIVO images and write to Excel files.
@@ -109,14 +108,12 @@ def process_images(
         debug_dir: Base directory for debug artifacts
         clips: (up, down, left, right) clipping margins
         table_shape: (width, height) of table
-        anagrafica: List of known station names
         ocr_engines: List of OCR engines to use. Available engines: tesseract, easyocr, paddleocr
         station_char_shape: Character dimensions for station names
         number_char_shape: Character dimensions for numbers
         roi_padding: ROI padding in pixels
         nchars_threshold: Character count threshold
         extra_width: Extra width for ROIs
-        low_confidence_threshold: Confidence threshold for output
         overwrite: Whether to overwrite existing files
     """
     # Initialize OCR reader once
@@ -140,7 +137,7 @@ def process_images(
         images_to_process = [
             image_path
             for image_path in image_paths
-            if not excel_out(output_dir, image_path, images_dir).exists()
+            if not scan_output_dir(output_dir, image_path, images_dir).exists()
         ]
     else:
         images_to_process = image_paths
@@ -152,8 +149,8 @@ def process_images(
     print("Initializing OCR reader...")
 
     ocrs = {}
-    if "easyreader" in ocr_engines:
-        ocrs["easyreader"] = easyocr.Reader(lang_list=["it"])
+    if "easyocr" in ocr_engines:
+        ocrs["easyocr"] = easyocr.Reader(lang_list=["it"])
     if "paddleocr" in ocr_engines:
         ocrs["paddleocr"] = paddleocr.TextRecognition(
             model_name="latin_PP-OCRv5_mobile_rec"
@@ -167,31 +164,23 @@ def process_images(
         images_to_process, desc="Processing images"
     ):  # pyrefly: ignore
         try:
-            # Load image
-            image = load_image(img_path)
-
-            # Generate output paths
-            excel_out_path = excel_out(output_dir, img_path, images_dir)
-
             # Generate debug directory if requested
             img_debug_dir = None
             if debug_base:
                 img_debug_dir = compose_debug_dir(debug_base, img_path, images_dir)
 
             # Process image
-            read_nivo_table(
-                image,
-                excel_out_path,
+            _ = read_nivo_table(
+                load_image(img_path),
+                scan_output_dir(output_dir, img_path, images_dir),
                 clips,
                 table_shape,
-                anagrafica,
                 ocrs,
                 station_char_shape,
                 number_char_shape,
                 roi_padding,
                 nchars_threshold,
                 extra_width,
-                low_confidence_threshold,
                 img_debug_dir,
             )
 
@@ -208,7 +197,7 @@ def create_argparser() -> argparse.ArgumentParser:
     """Create and configure argument parser for batch processing."""
     parser = argparse.ArgumentParser(
         prog="nivo-reader",
-        description="""Batch process NIVO table images and extract to Excel.""",
+        description="""Batch digitization of NIVO table images.""",
     )
 
     # Input/Output arguments
@@ -339,25 +328,6 @@ def main():
     else:
         logging.basicConfig(level=logging.CRITICAL)
 
-    # Load station names
-    anagrafica_path = Path(args.anagrafica_file)
-    if not anagrafica_path.exists():
-        print(f"Error: Anagrafica file not found: {anagrafica_path}")
-        sys.exit(1)
-
-    anagrafica = (
-        pl.read_excel(
-            args.anagrafica_file,
-            columns=["Stazione"],
-        )
-        .filter(pl.col("Stazione").is_not_null())["Stazione"]
-        .to_list()
-    )
-
-    if not anagrafica:
-        print("Error: Anagrafica file is empty")
-        sys.exit(1)
-
     # Validate images directory
     if not args.images_dir.exists():
         print(f"Error: Images directory not found: {args.images_dir}")
@@ -365,22 +335,21 @@ def main():
 
     image_formats = str(args.image_formats).split(",")
     ocr_engines = str(args.ocr_engines).split(",")
+    logging.info(f"engines: {ocr_engines}")
 
     # Process images
-    process_images(
+    digitize_scans(
         images_dir=args.images_dir,
         image_formats=image_formats,
         output_dir=args.output_dir,
         debug_dir=args.debug_dir,
         clips=(args.clips[0], args.clips[1], args.clips[2], args.clips[3]),
         table_shape=(args.table_shape[0], args.table_shape[1]),
-        anagrafica=anagrafica,
         station_char_shape=(args.station_char_shape[0], args.station_char_shape[1]),
         number_char_shape=(args.number_char_shape[0], args.number_char_shape[1]),
         roi_padding=args.roi_padding,
         nchars_threshold=args.nchars_threshold,
         extra_width=args.extra_width,
-        low_confidence_threshold=args.low_confidence_threshold,
         overwrite=args.overwrite,
         ocr_engines=ocr_engines,
     )
