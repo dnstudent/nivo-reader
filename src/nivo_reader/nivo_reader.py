@@ -65,7 +65,6 @@ NAME_READERS = {
 
 def read_nivo_table(
     original_image: MatLike,
-    output_dir: Path,
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
     ocr_objects: dict[str, Any],
@@ -213,6 +212,5 @@ def read_nivo_table(
     )
 
     df = pl.concat([names_reading_results, value_reading_results], how="vertical")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    df.write_json(output_dir / "digitization.json")
+
     return df

@@ -170,9 +170,8 @@ def digitize_scans(
                 img_debug_dir = compose_debug_dir(debug_base, img_path, images_dir)
 
             # Process image
-            _ = read_nivo_table(
+            raw_digitization = read_nivo_table(
                 load_image(img_path),
-                scan_output_dir(output_dir, img_path, images_dir),
                 clips,
                 table_shape,
                 ocrs,
@@ -183,6 +182,10 @@ def digitize_scans(
                 extra_width,
                 img_debug_dir,
             )
+
+            sod = scan_output_dir(output_dir, img_path, images_dir)
+            sod.mkdir(parents=True, exist_ok=True)
+            raw_digitization.write_json(sod / "raw_digitization.json")
 
             tqdm.write(f"✓ Processed: {img_path.relative_to(images_dir)}")
 
@@ -238,12 +241,6 @@ def create_argparser() -> argparse.ArgumentParser:
         metavar=("WIDTH", "HEIGHT"),
         help="Expected table shape (width, height)",
     )
-    _ = parser.add_argument(
-        "--anagrafica-file",
-        required=True,
-        type=str,
-        help="File with station names (one per line)",
-    )
 
     # Character shape parameters
     _ = parser.add_argument(
@@ -281,12 +278,6 @@ def create_argparser() -> argparse.ArgumentParser:
         type=int,
         default=6,
         help="Extra width for cell ROIs (default: 6)",
-    )
-    _ = parser.add_argument(
-        "--low-confidence-threshold",
-        type=float,
-        default=0.7,
-        help="Confidence threshold for output (default: 0.7)",
     )
 
     # Overwrite flag

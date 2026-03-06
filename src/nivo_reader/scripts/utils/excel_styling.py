@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, override
 
 import polars as pl
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Font, PatternFill
 
 
 class ExcelStyler(ABC):
@@ -50,10 +50,13 @@ class NivoDefaultStyler(ExcelStyler):
 
     threshold: float
     low_conf_fill: PatternFill
+    low_conf_font: Font
+    error_fill: PatternFill
+    error_font: Font
 
     def __init__(
         self,
-        threshold: float = 0.5,
+        threshold: float,
     ):
         """
         Args:
@@ -61,8 +64,15 @@ class NivoDefaultStyler(ExcelStyler):
         """
         self.threshold = threshold
         self.low_conf_fill = PatternFill(
-            start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid"
-        )  # Light red fill (Excel's default for "Bad")
+            bgColor="FFFFEB9C",
+            fgColor="FFFFEB9C",
+            fill_type="solid",
+        )  # Light yellow fill (Excel's default for "Warning")
+        self.low_conf_font = Font(color="FF9C6500")
+        self.error_fill = PatternFill(
+            bgColor="FFFFC7CE", fgColor="FFFFC7CE", fill_type="solid"
+        )  # Heavy red fill for empty cells
+        self.error_font = Font(color="FF9C0006")
 
     @override
     def apply(
@@ -74,19 +84,30 @@ class NivoDefaultStyler(ExcelStyler):
         """Style the table based on confidence values."""
         start_row, start_col, _, _ = table_region
 
-        confidence_lookup = {
-            (r, c): conf
-            for r, c, conf in aggregated_df.select(
-                ["row", "column", "confidence"]
+        data_lookup = {
+            (r, c): {"confidence": conf, "content": content}
+            for r, c, conf, content in aggregated_df.select(
+                ["row", "column", "confidence", "content"]
             ).iter_rows()
         }
 
-        for (data_row, data_col), confidence in confidence_lookup.items():
-            if confidence < self.threshold:
+        for (data_row, data_col), ocr_result in data_lookup.items():
+            if (
+                ocr_result["confidence"] is None
+                or ocr_result["content"] == ""
+                or ocr_result["content"] is None
+            ):
+                ws_row = start_row + data_row
+                ws_col = start_col + data_col
+                ws.cell(row=ws_row, column=ws_col).fill = self.error_fill
+                ws.cell(row=ws_row, column=ws_col).font = self.error_font
+
+            elif ocr_result["confidence"] < self.threshold:
                 # ws is 1-indexed. data_row/data_col are 0-indexed relative to the table start.
                 ws_row = start_row + data_row
                 ws_col = start_col + data_col
                 ws.cell(row=ws_row, column=ws_col).fill = self.low_conf_fill
+                ws.cell(row=ws_row, column=ws_col).font = self.low_conf_font
 
 
 def apply_styler(

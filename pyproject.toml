@@ -9,7 +9,7 @@ authors = [{ name = "Davide Nicoli", email = "davide.nicoli@unimi.it" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
-  "Programming Language :: Python :: 3"
+  "Programming Language :: Python :: 3",
 ]
 dependencies = [
   "easyocr>=1.7.3",
@@ -37,6 +37,7 @@ Repository = "https://github.com/dnstudent/nivo-reader"
 
 [project.scripts]
 nivo-reader = "nivo_reader.scripts.digitize:main"
+nivo-cleanup = "nivo_reader.scripts.cleanup:main"
 nivo-writer = "nivo_reader.scripts.write_excel:main"
 
 [dependency-groups]
@@ -67,10 +68,7 @@ reportMissingParameterType = "none"
 reportMissingTypeStubs = "none"
 
 [tool.pyrefly]
-project-includes = [
-  "**/*.py*",
-  "**/*.ipynb",
-]
+project-includes = ["**/*.py*", "**/*.ipynb"]
 
 [tool.uv.sources]
 easyocr = { git = "https://github.com/dnstudent/EasyOCR" }

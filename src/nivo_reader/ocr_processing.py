@@ -304,66 +304,6 @@ def detect_station_boxes(
     return filtered_wboxes
 
 
-def associate_closest_station_names(
-    results: list[str | None], anagrafica: list[str]
-) -> list[dict[str, Any]]:
-    """
-    Match OCR results to known station names using Levenshtein distance.
-
-    Parameters
-    ----------
-    results : list[str | None]
-        OCR recognized names.
-    anagrafica : list[str]
-        Known station names.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        List of dicts with matched names and similarity scores.
-    """
-    anagrafica_df = pl.DataFrame({"name_anagrafica": anagrafica}).with_columns(
-        simplified_name=pl.col("name_anagrafica")
-        .str.to_lowercase()
-        .str.strip_chars()
-        .str.replace_all(r"\s+", " ")
-    )
-    results_df = (
-        (
-            pl.DataFrame({"ocr_name": results}, schema={"ocr_name": pl.String})
-            .with_columns(pl.row_index())
-            .with_columns(
-                simplified_name=pl.coalesce("ocr_name", pl.lit(""))
-                .str.to_lowercase()
-                .str.strip_chars()
-                .str.replace_all(r"\s+", " ")
-            )
-            .join(anagrafica_df, how="cross", suffix="_anagrafica")
-        )
-        .with_columns(
-            distance=(
-                pl.col("simplified_name")  # pyright: ignore[reportUnknownMemberType]
-                .dist_str.levenshtein("simplified_name_anagrafica")  # type: ignore  # pyright: ignore[reportAttributeAccessIssue]
-                .cast(pl.Int32)
-            )
-        )
-        .sort("index", "distance")
-        .group_by("index", maintain_order=True)
-        .head(1)
-        .with_columns(similarity=-pl.col("distance"))
-    )
-    return (
-        results_df.sort("index")
-        .with_columns(
-            name_anagrafica=pl.when(pl.col("ocr_name").is_null())
-            .then("ocr_name")
-            .otherwise("name_anagrafica")
-        )
-        .select(name="name_anagrafica", string_similarity="similarity")
-        .to_dicts()
-    )
-
-
 def compute_name_rows(boxes: list[Rect]) -> list[int]:
     """
     Sort box indices by y-coordinate.
