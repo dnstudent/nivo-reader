@@ -66,37 +66,41 @@ def create_parser():
     return parser
 
 
-def run_cleanup(
-    input_file: Path,
-    output_file: Path,
+def cleanup_digitization(
+    raw_df: pl.DataFrame,
     pipeline: ReadingTransformationPipeline,
-):
-    """Load raw digitization, apply cleanup pipeline, and save."""
-    raw_df = pl.read_json(input_file)
-    cleaned_df = pipeline(raw_df)
-    cleaned_df.write_json(output_file)
+) -> pl.DataFrame:
+    """Apply cleanup pipeline to a single digitization dataframe.
+
+    Args:
+        raw_df: Raw digitization dataframe
+        pipeline: The ReadingTransformationPipeline to apply
+
+    Returns:
+        Cleaned digitization dataframe
+    """
+    return pipeline(raw_df)
 
 
-def main():
-    parser = create_parser()
-    args = parser.parse_args()
-    input_dir = Path(args.input_dir)
-    assert input_dir.exists(), f"Input directory {input_dir} does not exist"
+def cleanup_digitizations_batch(
+    input_dir: Path,
+    output_dir: Path,
+    station_names: list[str],
+    confidence_threshold: float = 0.8,
+) -> None:
+    """Process multiple raw NIVO digitizations and save cleaned versions.
 
-    if args.output_dir is None:
-        output_dir = input_dir
-    else:
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(exist_ok=True, parents=True)
-
-    # Load station names for AssociateClosestMatch
-    station_names = (
-        pl.read_excel(args.anagrafica_file)["Stazione"].drop_nulls().to_list()
-    )
+    Args:
+        input_dir: Directory containing raw digitization files
+        output_dir: Directory where cleaned files will be saved
+        station_names: List of valid station names for closest match resolution
+        confidence_threshold: Confidence threshold for automatic easyocr corrections
+    """
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
 
     # Define the NIVO cleanup pipeline
-    threshold = args.confidence_threshold
-
     station_name_replacements = AssociateClosestMatch(
         pl.DataFrame({"column": 0, "content": station_names})
     )
@@ -106,7 +110,7 @@ def main():
         (pl.col("content").str.contains_any(["-", "_", "=", "—", "−"]))
         & (pl.col("column") > 1),
         (pl.col("reader") == "easyocr")
-        & (pl.col("confidence") < threshold)
+        & (pl.col("confidence") < confidence_threshold)
         & (pl.col("content") == "2")
         & (pl.col("column") > 1),
         (pl.col("content").is_null() | (pl.col("content") == ""))
@@ -136,7 +140,34 @@ def main():
             "digitization.json"
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        run_cleanup(raw_file, output_path, pipeline)
+
+        raw_df = pl.read_json(raw_file)
+        cleaned_df = cleanup_digitization(raw_df, pipeline)
+        cleaned_df.write_json(output_path)
+
+
+def main():
+    parser = create_parser()
+    args = parser.parse_args()
+    input_dir = Path(args.input_dir)
+    assert input_dir.exists(), f"Input directory {input_dir} does not exist"
+
+    if args.output_dir is None:
+        output_dir = input_dir
+    else:
+        output_dir = Path(args.output_dir)
+
+    # Load station names for AssociateClosestMatch
+    station_names = (
+        pl.read_excel(args.anagrafica_file)["Stazione"].drop_nulls().to_list()
+    )
+
+    cleanup_digitizations_batch(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        station_names=station_names,
+        confidence_threshold=args.confidence_threshold,
+    )
 
 
 if __name__ == "__main__":

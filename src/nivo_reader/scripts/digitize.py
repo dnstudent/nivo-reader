@@ -26,10 +26,12 @@ from pathlib import Path
 import easyocr
 import numpy as np
 import paddleocr
+import polars as pl
 from PIL import Image
 from tqdm import tqdm
 
 from nivo_reader.nivo_reader import read_nivo_table
+from nivo_reader.scripts.utils.paths import discover_files
 
 # Suppress pin_memory warnings from PyTorch/EasyOCR
 warnings.filterwarnings("ignore", message=".*pin_memory.*")
@@ -84,11 +86,84 @@ def compose_debug_dir(debug_dir: Path, image_path: Path, images_dir: Path) -> Pa
     return debug_dir / image_path.relative_to(images_dir) / ""
 
 
-def digitize_scans(
+def extract_digitizations(
+    image_paths: list[Path],
+    clips: tuple[int, int, int, int],
+    table_shape: tuple[int, int],
+    ocr_engines: list[str],
+    station_char_shape: tuple[int, int] = (12, 10),
+    number_char_shape: tuple[int, int] = (12, 20),
+    roi_padding: int = 3,
+    nchars_threshold: int = 20,
+    extra_width: int = 6,
+    debug_base_dir: Path | None = None,
+    base_images_dir: Path | None = None,
+) -> dict[Path, pl.DataFrame]:
+    """Process multiple NIVO images and return their digitizations.
+
+    Args:
+        image_paths: List of paths to input images
+        clips: (up, down, left, right) clipping margins
+        table_shape: (width, height) of table
+        ocr_engines: List of OCR engines to use ('tesseract', 'easyocr', 'paddleocr')
+        station_char_shape: Character dimensions for station names
+        number_char_shape: Character dimensions for numbers
+        roi_padding: ROI padding in pixels
+        nchars_threshold: Character count threshold
+        extra_width: Extra width for ROIs
+        debug_base_dir: Base directory for debug artifacts
+        base_images_dir: Base directory to compute relative paths for debug
+
+    Returns:
+        Dictionary mapping input image paths to their digitization DataFrames
+    """
+    ocrs = {}
+    if "easyocr" in ocr_engines:
+        ocrs["easyocr"] = easyocr.Reader(lang_list=["it"])
+    if "paddleocr" in ocr_engines:
+        ocrs["paddleocr"] = paddleocr.TextRecognition(
+            model_name="latin_PP-OCRv5_mobile_rec"
+        )
+    if "tesseract" in ocr_engines:
+        ocrs["tesseract"] = None
+
+    results = {}
+    for img_path in image_paths:
+        try:
+            # Generate debug directory if requested
+            img_debug_dir = None
+            if debug_base_dir and base_images_dir:
+                img_debug_dir = compose_debug_dir(
+                    debug_base_dir, img_path, base_images_dir
+                )
+
+            # Process image
+            raw_digitization = read_nivo_table(
+                load_image(img_path),
+                clips,
+                table_shape,
+                ocrs,
+                station_char_shape,
+                number_char_shape,
+                roi_padding,
+                nchars_threshold,
+                extra_width,
+                img_debug_dir,
+            )
+            results[img_path] = raw_digitization
+
+        except Exception as e:
+            logging.exception(f"Error processing {img_path}: {e}")
+            # You might want to skip or raise. For now we skip just like before.
+
+    return results
+
+
+def digitize_scans_batch(
     images_dir: Path,
     image_formats: list[str],
     output_dir: Path,
-    debug_dir: Path,
+    debug_dir: Path | None,
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
     ocr_engines: list[str],
@@ -99,16 +174,16 @@ def digitize_scans(
     extra_width: int = 6,
     overwrite: bool = False,
 ) -> None:
-    """Process multiple NIVO images and write to Excel files.
+    """Batch process multiple NIVO images and write to output files.
 
     Args:
         images_dir: Directory containing input images
-        image_formats: List of image file extensions to process (e.g., ['png', 'jpg'])
-        output_dir: Directory for output Excel files
+        image_formats: List of image file extensions to process
+        output_dir: Directory for output files
         debug_dir: Base directory for debug artifacts
         clips: (up, down, left, right) clipping margins
         table_shape: (width, height) of table
-        ocr_engines: List of OCR engines to use. Available engines: tesseract, easyocr, paddleocr
+        ocr_engines: List of OCR engines to use
         station_char_shape: Character dimensions for station names
         number_char_shape: Character dimensions for numbers
         roi_padding: ROI padding in pixels
@@ -116,19 +191,17 @@ def digitize_scans(
         extra_width: Extra width for ROIs
         overwrite: Whether to overwrite existing files
     """
-    # Initialize OCR reader once
-
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    debug_base = Path(debug_dir) if debug_dir else None
-    if debug_base:
-        debug_base.mkdir(parents=True, exist_ok=True)
+    if debug_dir:
+        debug_dir = Path(debug_dir)
+        debug_dir.mkdir(parents=True, exist_ok=True)
 
     images_dir = Path(images_dir)
     image_paths = list(
         chain.from_iterable(
-            map(lambda format: images_dir.glob(f"**/*.{format}"), image_formats)
+            map(lambda format: discover_files(images_dir, format), image_formats)
         )
     )
 
@@ -148,55 +221,38 @@ def digitize_scans(
 
     print("Initializing OCR reader...")
 
-    ocrs = {}
-    if "easyocr" in ocr_engines:
-        ocrs["easyocr"] = easyocr.Reader(lang_list=["it"])
-    if "paddleocr" in ocr_engines:
-        ocrs["paddleocr"] = paddleocr.TextRecognition(
-            model_name="latin_PP-OCRv5_mobile_rec"
-        )
-    if "tesseract" in ocr_engines:
-        ocrs["tesseract"] = None
-
+    # We maintain tqdm logic here for TUI functionality.
+    # To use our shiny new pure function, we call it in chunks of 1
+    # so we still get proper per-image TUI progress bars.
     print(f"Processing {len(images_to_process)} images...")
-    # Process images with progress bar
+
     for img_path in tqdm(
         images_to_process, desc="Processing images"
     ):  # pyrefly: ignore
-        try:
-            # Generate debug directory if requested
-            img_debug_dir = None
-            if debug_base:
-                img_debug_dir = compose_debug_dir(debug_base, img_path, images_dir)
+        results = extract_digitizations(
+            image_paths=[img_path],
+            clips=clips,
+            table_shape=table_shape,
+            ocr_engines=ocr_engines,
+            station_char_shape=station_char_shape,
+            number_char_shape=number_char_shape,
+            roi_padding=roi_padding,
+            nchars_threshold=nchars_threshold,
+            extra_width=extra_width,
+            debug_base_dir=debug_dir,
+            base_images_dir=images_dir,
+        )
 
-            # Process image
-            raw_digitization = read_nivo_table(
-                load_image(img_path),
-                clips,
-                table_shape,
-                ocrs,
-                station_char_shape,
-                number_char_shape,
-                roi_padding,
-                nchars_threshold,
-                extra_width,
-                img_debug_dir,
-            )
-
+        if img_path in results:
             sod = scan_output_dir(output_dir, img_path, images_dir)
             sod.mkdir(parents=True, exist_ok=True)
-            raw_digitization.write_json(sod / "raw_digitization.json")
-
+            results[img_path].write_json(sod / "raw_digitization.json")
             tqdm.write(f"✓ Processed: {img_path.relative_to(images_dir)}")
-
-        except Exception as e:
-            logging.exception(
-                f"Error processing {img_path.relative_to(images_dir)}: {e}"
-            )
-            tqdm.write(f"✗ Error processing {img_path.relative_to(images_dir)}: {e}")
+        else:
+            tqdm.write(f"✗ Error processing {img_path.relative_to(images_dir)}")
 
 
-def create_argparser() -> argparse.ArgumentParser:
+def create_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser for batch processing."""
     parser = argparse.ArgumentParser(
         prog="nivo-reader",
@@ -306,42 +362,55 @@ def create_argparser() -> argparse.ArgumentParser:
 
 
 def main():
-    parser = create_argparser()
+    parser = create_parser()
     args = parser.parse_args()
 
-    if args.debug_dir:
-        Path(args.debug_dir).mkdir(exist_ok=True, parents=True)
+    # Create variables explicitly to satisfy basedpyright
+    debug_dir: str | None = args.debug_dir
+    images_dir: Path = args.images_dir
+    output_dir: str = args.output_dir
+    clips: list[int] = args.clips
+    table_shape: list[int] = args.table_shape
+    station_char_shape: list[int] = args.station_char_shape
+    number_char_shape: list[int] = args.number_char_shape
+    roi_padding: int = args.roi_padding
+    nchars_threshold: int = args.nchars_threshold
+    extra_width: int = args.extra_width
+    overwrite: bool = args.overwrite
+    image_formats: list[str] = str(args.image_formats).split(",")
+    ocr_engines: list[str] = str(args.ocr_engines).split(",")
+
+    if debug_dir:
+        Path(debug_dir).mkdir(exist_ok=True, parents=True)
         logging.basicConfig(
             level=logging.DEBUG,
-            filename=Path(args.debug_dir) / "process_nivo_images.log",
+            filename=Path(debug_dir) / "process_nivo_images.log",
             filemode="w",
         )
     else:
         logging.basicConfig(level=logging.CRITICAL)
 
     # Validate images directory
-    if not args.images_dir.exists():
-        print(f"Error: Images directory not found: {args.images_dir}")
+    if not images_dir.exists():
+        print(f"Error: Images directory not found: {images_dir}")
         sys.exit(1)
 
-    image_formats = str(args.image_formats).split(",")
-    ocr_engines = str(args.ocr_engines).split(",")
     logging.info(f"engines: {ocr_engines}")
 
     # Process images
-    digitize_scans(
-        images_dir=args.images_dir,
+    digitize_scans_batch(
+        images_dir=images_dir,
         image_formats=image_formats,
-        output_dir=args.output_dir,
-        debug_dir=args.debug_dir,
-        clips=(args.clips[0], args.clips[1], args.clips[2], args.clips[3]),
-        table_shape=(args.table_shape[0], args.table_shape[1]),
-        station_char_shape=(args.station_char_shape[0], args.station_char_shape[1]),
-        number_char_shape=(args.number_char_shape[0], args.number_char_shape[1]),
-        roi_padding=args.roi_padding,
-        nchars_threshold=args.nchars_threshold,
-        extra_width=args.extra_width,
-        overwrite=args.overwrite,
+        output_dir=Path(output_dir),
+        debug_dir=Path(debug_dir) if debug_dir else None,
+        clips=(clips[0], clips[1], clips[2], clips[3]),
+        table_shape=(table_shape[0], table_shape[1]),
+        station_char_shape=(station_char_shape[0], station_char_shape[1]),
+        number_char_shape=(number_char_shape[0], number_char_shape[1]),
+        roi_padding=roi_padding,
+        nchars_threshold=nchars_threshold,
+        extra_width=extra_width,
+        overwrite=overwrite,
         ocr_engines=ocr_engines,
     )
 
