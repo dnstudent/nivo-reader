@@ -25,14 +25,18 @@ from tqdm import tqdm
 
 from nivo_reader.modules.reading_transformation import (
     AssociateClosestMatch,
-    CustomSubstitution,
+    OverwriteCellContent,
     ReadingTransformationPipeline,
+    NoOp,
 )
-from nivo_reader.modules.reading_transformation.filter_characters import (
-    FilterCharacters,
+from nivo_reader.modules.reading_transformation.replace_characters import (
+    ReplaceCharacters,
 )
 
 from .utils.paths import discover_files, reroute_file
+
+CONTENT_COLUMNS = pl.col("column") > 1
+NUMERIC_COLUMNS = pl.col("column") != 0
 
 
 def create_parser():
@@ -52,9 +56,16 @@ def create_parser():
         default=None,
     )
     _ = parser.add_argument(
-        "--anagrafica-file",
-        required=True,
+        "--debug-dir",
+        help="Directory where debug artefacts will be saved",
         type=str,
+        default=None,
+    )
+    _ = parser.add_argument(
+        "--anagrafica-file",
+        required=False,
+        type=str,
+        default=None,
         help="File with station names (Excel file with 'Stazione' column)",
     )
     _ = parser.add_argument(
@@ -85,8 +96,9 @@ def cleanup_digitization(
 def cleanup_digitizations_batch(
     input_dir: Path,
     output_dir: Path,
-    station_names: list[str],
+    station_names: list[str] | None,
     confidence_threshold: float = 0.8,
+    debug_dir: Path | None = None,
 ) -> None:
     """Process multiple raw NIVO digitizations and save cleaned versions.
 
@@ -101,30 +113,40 @@ def cleanup_digitizations_batch(
     output_dir.mkdir(exist_ok=True, parents=True)
 
     # Define the NIVO cleanup pipeline
-    station_name_replacements = AssociateClosestMatch(
-        pl.DataFrame({"column": 0, "content": station_names})
-    )
-    dash_sub = CustomSubstitution(
+    if station_names is not None:
+        station_name_replacements = AssociateClosestMatch(
+            pl.DataFrame({"column": 0, "content": station_names})
+        )
+    else:
+        station_name_replacements = NoOp()
+    dash_sub = OverwriteCellContent(
         "content",
         pl.lit("-"),
-        (pl.col("content").str.contains_any(["-", "_", "=", "—", "−"]))
-        & (pl.col("column") > 1),
-        (pl.col("reader") == "easyocr")
-        & (pl.col("confidence") < confidence_threshold)
-        & (pl.col("content") == "2")
-        & (pl.col("column") > 1),
-        (pl.col("content").is_null() | (pl.col("content") == ""))
-        & (pl.col("column") > 1),
+        (pl.col("content").str.contains_any(["-", "_", "=", "—", "−", "*"]))
+        | (
+            (pl.col("reader") == "easyocr")
+            & (pl.col("confidence") < confidence_threshold)
+            & (pl.col("content") == "2")
+        )
+        | pl.col("content").is_null()
+        | (pl.col("content").str.strip_chars() == "")
+        | (
+            pl.col("content").str.contains(r".", literal=True)
+            & (pl.col("reader") == "paddleocr")
+        ),
+        CONTENT_COLUMNS,
     )
-    allowed_chars = FilterCharacters(
-        "0123456789-",
-        pl.col("column") != 0,
+    # random_paddle
+    drop_chars = ReplaceCharacters(
+        "content",
+        {":": "", "|": "", "i": "1", "l": "1", "I": "1", "C": "0", "»": ">"},
+        NUMERIC_COLUMNS,
     )
 
     pipeline = ReadingTransformationPipeline(
         station_name_replacements,
         dash_sub,
-        allowed_chars,
+        drop_chars,
     )
 
     # Discover and process files
@@ -144,6 +166,11 @@ def cleanup_digitizations_batch(
         raw_df = pl.read_json(raw_file)
         cleaned_df = cleanup_digitization(raw_df, pipeline)
         cleaned_df.write_json(output_path)
+        # if debug_dir is not None:
+        #     debug_path = reroute_file(raw_file, debug_dir, input_dir).with_name(
+        #         "cleaned_digitization.xlsx"
+        #     )
+        #     cleaned_df.sort().write_excel(debug_path)
 
 
 def main():
@@ -159,7 +186,16 @@ def main():
 
     # Load station names for AssociateClosestMatch
     station_names = (
-        pl.read_excel(args.anagrafica_file)["Stazione"].drop_nulls().to_list()
+        (
+            pl.read_excel(args.anagrafica_file, has_header=True, columns=["Stazione"])
+            .filter(pl.col("Stazione").str.strip_chars() != "")
+            .with_columns(pl.col("Stazione").str.split("/"))
+            .explode("Stazione")["Stazione"]
+            .drop_nulls()
+            .to_list()
+        )
+        if args.anagrafica_file is not None and Path(args.anagrafica_file).exists()
+        else None
     )
 
     cleanup_digitizations_batch(

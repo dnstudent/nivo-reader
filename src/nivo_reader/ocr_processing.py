@@ -30,8 +30,10 @@ import paddleocr
 import polars as pl
 import polars_distance as pld  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import pytesseract
+import tesserocr
 from cv2.typing import MatLike, Rect
 from numpy.typing import NDArray
+from PIL import Image
 
 from .configuration.table_and_cell_detection import (
     WordBlobsCreationConfiguration,
@@ -51,7 +53,9 @@ from .table_detection import create_word_blobs
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_LETTERS = f"{ascii_letters}()'/áàóòúùèéìi"
+ALLOWED_LETTERS = f"{ascii_letters}()'/áàóòúùèéìi»?>"
+ALLOWED_LETTERS_TESSERACT = f"{ascii_letters}()\\'/áàóòúùèéìi"
+ALLOWED_NUMBERS = "_-0123456789?»"
 
 
 def filter_by_size(input_boxes: list[Rect], char_shape: tuple[int, int]) -> list[Rect]:
@@ -182,6 +186,7 @@ def merge_and_filter_station_name_boxes(
     input_boxes: list[Rect],
     rows_positions: list[int],
     char_height: int,
+    multi_rows: bool,
     debug_img: MatLike | None = None,
 ) -> list[Rect]:
     """
@@ -197,6 +202,8 @@ def merge_and_filter_station_name_boxes(
         Row center y-coordinates.
     char_height : int
         Character height.
+    multi_rows : bool
+        Whether station names can span multiple rows.
     debug_img : MatLike | None, optional
         Debug image to draw on.
 
@@ -235,6 +242,7 @@ def merge_and_filter_station_name_boxes(
     for row_position in rows_positions:
         matching_name_box_i = (
             int(
+                # TODO: sometimes the input list is empty
                 np.argmin(
                     np.abs(
                         merged_boxes_centers[last_matched_box_i + 1 :] - row_position
@@ -244,24 +252,31 @@ def merge_and_filter_station_name_boxes(
             + last_matched_box_i
             + 1
         )
-        to_merge_name_box_is = list(
-            takewhile(
-                lambda i: _sorted_boxes_are_vertically_close(
-                    (horizontally_merged_boxes[i], horizontally_merged_boxes[i + 1]),
-                    row_height,
-                ),
-                range(matching_name_box_i - 1, last_matched_box_i, -1),
-            )
-        )
 
-        if to_merge_name_box_is:
-            merged_box = merge_boxes(
-                horizontally_merged_boxes[
-                    to_merge_name_box_is[-1] : matching_name_box_i + 1
-                ]
+        if multi_rows:
+            to_merge_name_box_is = list(
+                takewhile(
+                    lambda i: _sorted_boxes_are_vertically_close(
+                        (
+                            horizontally_merged_boxes[i],
+                            horizontally_merged_boxes[i + 1],
+                        ),
+                        row_height,
+                    ),
+                    range(matching_name_box_i - 1, last_matched_box_i, -1),
+                )
             )
-            if not merged_box:
-                logger.error("Merged box is None")
+
+            if to_merge_name_box_is:
+                merged_box = merge_boxes(
+                    horizontally_merged_boxes[
+                        to_merge_name_box_is[-1] : matching_name_box_i + 1
+                    ]
+                )
+                if not merged_box:
+                    logger.error("Merged box is None")
+                    merged_box = horizontally_merged_boxes[matching_name_box_i]
+            else:
                 merged_box = horizontally_merged_boxes[matching_name_box_i]
         else:
             merged_box = horizontally_merged_boxes[matching_name_box_i]
@@ -271,8 +286,13 @@ def merge_and_filter_station_name_boxes(
     return output_boxes
 
 
+# TODO: move to nivo-specific section
 def detect_station_boxes(
-    column_image: MatLike, char_shape: tuple[int, int], rows_centers: list[int]
+    column_image: MatLike,
+    char_shape: tuple[int, int],
+    rows_centers: list[int],
+    multi_rows: bool,
+    debug_image: MatLike | None,
 ) -> list[Rect]:
     """
     Detect station name boxes in first column.
@@ -285,6 +305,8 @@ def detect_station_boxes(
         Character dimensions (width, height).
     rows_centers : list[int]
         Row center positions.
+    multi_rows : bool
+        Whether station names can span multiple rows.
 
     Returns
     -------
@@ -299,7 +321,7 @@ def detect_station_boxes(
     word_boxes.sort(key=lambda r: r[1])
     filtered_wboxes = filter_by_size(word_boxes, char_shape)
     filtered_wboxes = merge_and_filter_station_name_boxes(
-        filtered_wboxes, rows_centers, char_shape[1]
+        filtered_wboxes, rows_centers, char_shape[1], multi_rows, debug_image
     )
     return filtered_wboxes
 
@@ -481,7 +503,7 @@ def easyocr_values_reader(ocr: easyocr.Reader):
                     image,
                     horizontal_list=easyrois,
                     free_list=[],
-                    allowlist="_-0123456789",
+                    allowlist=ALLOWED_NUMBERS,
                     output_format="dict",
                     batch_size=128,
                     sort_output=False,
@@ -591,7 +613,7 @@ def tesseract_values_reader(_: None):
             processed_result = process_tesseract_cell_result(
                 pytesseract.image_to_data(  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
                     crop,
-                    config="--psm 8 -c tessedit_char_whitelist=0123456789-_ --oem 1",
+                    config=f"--psm 8 -c tessedit_char_whitelist={ALLOWED_NUMBERS} --oem 1",
                     output_type="dict",
                 ),
                 roi,
@@ -620,7 +642,7 @@ def tesseract_names_reader(_: None):
             processed_result = process_tesseract_cell_result(
                 pytesseract.image_to_data(  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
                     crop,
-                    config=f"--psm 8 -c tessedit_char_whitelist={ascii_letters}()\\'/áàóòúùèéìi --oem 1",
+                    config=f"--psm 8 -c tessedit_char_whitelist={ALLOWED_LETTERS_TESSERACT} --oem 1",
                     output_type="dict",
                 ),
                 roi,
@@ -637,12 +659,35 @@ def tesseract_names_reader(_: None):
     return _reader
 
 
+def tesserocr_values_reader(api: tesserocr.PyTessBaseAPI):
+    def _reader(image: MatLike, rois: list[Rect]):
+        logger.info("Loading a new image into tesserocr")
+        api.Clear()
+        api.SetImage(Image.fromarray(image))
+        texts: list[str | None] = []
+        confidences: list[float | None] = []
+        boxes: list[Rect] = []
+        for roi in rois:
+            api.SetRectangle(roi[0], roi[1], roi[2], roi[3])
+            texts.append(api.GetUTF8Text().strip())
+            confidences.append(api.MeanTextConf() / 100)
+            boxes.append(roi)
+        return [texts, confidences, boxes]
+
+    return _reader
+
+
+def tesserocr_names_reader(api: tesserocr.PyTessBaseAPI):
+    return tesserocr_values_reader(api)
+
+
 # TODO: move to nivo-specific section
 def read_station_names(
     image: MatLike,
     rows_centers: list[int],
     column_separators: list[int],
     char_shape: tuple[int, int],
+    multi_rows: bool,
     readers: dict[
         str,
         Callable[
@@ -651,6 +696,7 @@ def read_station_names(
         ],
     ],
     roi_padding: int,
+    debug_image: MatLike | None,
 ) -> pl.DataFrame:
     """
     Read station names from the first column of the table.
@@ -665,6 +711,8 @@ def read_station_names(
         The x-coordinates of the column separators.
     char_shape : tuple[int, int]
         The approximate shape (width, height) of a character.
+    multi_rows : bool
+        Whether station names can span multiple rows.
     readers : dict[str, Callable[[MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]]]
         A dict of tagged callables that takes an image and a list of ROIs and returns the recognized text, confidences, and bounding boxes.
     roi_padding : int
@@ -684,7 +732,9 @@ def read_station_names(
     names_wboxes = list(
         map(
             lambda box: pad_roi(autocrop_roi(box, image), roi_padding),
-            detect_station_boxes(first_column, char_shape, rows_centers),
+            detect_station_boxes(
+                first_column, char_shape, rows_centers, multi_rows, debug_image
+            ),
         )
     )
 

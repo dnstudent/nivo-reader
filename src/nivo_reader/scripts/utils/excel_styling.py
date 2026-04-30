@@ -19,7 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, override
+from typing import Any, final, override
 
 import polars as pl
 from openpyxl.styles import Font, PatternFill
@@ -108,6 +108,87 @@ class NivoDefaultStyler(ExcelStyler):
                 ws_col = start_col + data_col
                 ws.cell(row=ws_row, column=ws_col).fill = self.low_conf_fill
                 ws.cell(row=ws_row, column=ws_col).font = self.low_conf_font
+
+
+@final
+class NivoTestStyler(ExcelStyler):
+    def __init__(self, station_details: pl.DataFrame, warning_threshold: float) -> None:
+        super().__init__()
+        self.invalid_details = PatternFill(
+            bgColor="FFFAA46E", fgColor="FFFAA46E", fill_type="solid"
+        )
+        self.error_fill = PatternFill(
+            bgColor="FFFFC7CE", fgColor="FFFFC7CE", fill_type="solid"
+        )  # Heavy red fill for empty cells
+        self.error_font = Font(color="FF9C0006")
+        self.warn_fill = PatternFill(
+            bgColor="FFFFEB9C", fgColor="FFFFEB9C", fill_type="solid"
+        )
+        self.warn_font = Font(color="FF9C6500")
+        self.station_details = station_details
+        self.warning_threshold = warning_threshold
+
+    @override
+    def apply(
+        self,
+        ws: Any,
+        aggregated_df: pl.DataFrame,
+        table_region: tuple[int, int, int, int],
+    ) -> None:
+        pivoted_df = (
+            aggregated_df.pivot(
+                on="column", index="row", values="content", sort_columns=True
+            )
+            .sort(by="row")
+            .drop("row")
+            .rename({"0": "Stazione", "1": "Elevazione"})
+        )
+        expected_heights = {
+            row["Stazione"]: row["Elevazione_expected"]
+            for row in pivoted_df.join(
+                self.station_details, on="Stazione", how="left", suffix="_expected"
+            )
+            .group_by("Stazione")
+            .agg(pl.col("Elevazione_expected"))
+            .iter_rows(named=True)
+        }
+
+        start_row, start_col, _, _ = table_region
+        for i, row in enumerate(pivoted_df.iter_rows(named=True)):
+            try:
+                elev = int(row["Elevazione"])
+            except ValueError:
+                elev = None
+            if elev not in expected_heights[row["Stazione"]]:
+                ws.cell(row=start_row + i, column=start_col).fill = self.invalid_details
+                ws.cell(
+                    row=start_row + i, column=start_col + 1
+                ).fill = self.invalid_details
+
+        data_lookup = {
+            (r, c): {"confidence": conf, "content": content}
+            for r, c, conf, content in aggregated_df.select(
+                ["row", "column", "confidence", "content"]
+            ).iter_rows()
+        }
+
+        for (data_row, data_col), ocr_result in data_lookup.items():
+            if ocr_result["confidence"] < self.warning_threshold:
+                ws_row = start_row + data_row
+                ws_col = start_col + data_col
+                ws.cell(row=ws_row, column=ws_col).fill = self.warn_fill
+                ws.cell(row=ws_row, column=ws_col).font = self.warn_font
+            if (
+                ocr_result["confidence"] is None
+                or ocr_result["content"] == ""
+                or ocr_result["content"] is None
+            ):
+                ws_row = start_row + data_row
+                ws_col = start_col + data_col
+                ws.cell(row=ws_row, column=ws_col).fill = self.error_fill
+                ws.cell(row=ws_row, column=ws_col).font = self.error_font
+
+        return
 
 
 def apply_styler(

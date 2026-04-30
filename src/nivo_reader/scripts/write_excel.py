@@ -23,6 +23,7 @@ from pathlib import Path
 import polars as pl
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.utils.dataframe import dataframe_to_rows
 from tqdm import tqdm
 
 from nivo_reader.modules.results_aggregation import (
@@ -32,7 +33,7 @@ from nivo_reader.modules.results_aggregation import (
 )
 from nivo_reader.modules.results_aggregation.base import ResultsAggregator
 
-from .utils.excel_styling import ExcelStyler, NivoDefaultStyler
+from .utils.excel_styling import ExcelStyler, NivoTestStyler
 from .utils.paths import discover_files, reroute_file
 
 
@@ -62,6 +63,12 @@ def create_parser():
         "--confidence-threshold",
         help="Confidence threshold for highlighting cells",
         type=float,
+        default=0.8,
+    )
+    _ = parser.add_argument(
+        "--station-details",
+        help="Path to a CSV file containing station details",
+        type=str,
         default=None,
     )
     return parser
@@ -118,8 +125,6 @@ def write_excel_workbook(
         .drop("row")
         .to_pandas()
     )
-
-    from openpyxl.utils.dataframe import dataframe_to_rows
 
     # startrow=row, startcol=col in 0-indexed pandas mapping
     for r_idx, pd_row in enumerate(dataframe_to_rows(pd_df, index=False, header=False)):
@@ -188,7 +193,18 @@ def main():
     aggregator = AggregatorPipeline(
         [MostOccurringValues(at_least=2), HighestScoring()],
     )
-    styler = NivoDefaultStyler(threshold=args.confidence_threshold or 0.9)
+    # styler = NivoDefaultStyler(threshold=args.confidence_threshold or 0.9)
+    station_details = (
+        pl.read_excel(
+            args.station_details,
+            schema_overrides={"Elevazione": pl.Int64},
+            columns=["Stazione", "Elevazione"],
+        )
+        .with_columns(pl.col("Stazione").str.split("/"))
+        .explode("Stazione")
+        .filter(pl.col("Stazione").str.strip_chars() != "")
+    )
+    styler = NivoTestStyler(station_details, args.confidence_threshold)
 
     write_excels_batch(
         input_dir=input_dir,

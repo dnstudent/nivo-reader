@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-from cv2.typing import MatLike
+from cv2.typing import MatLike, Rect
 
 from . import ocr_processing
 from .configuration.preprocessing import (
@@ -47,10 +47,11 @@ from .table_detection import (
     detect_column_separators,
     detect_rows_positions,
     remove_lines_from_image,
-    try_detect_table_rect,
 )
+from nivo_reader.modules.table_detection.nivo_table_detection import NivoTableDetection
 
-SUPPORTED_OCRS = ["tesseract", "easyocr", "paddleocr"]
+
+SUPPORTED_OCRS = ["tesseract", "easyocr", "paddleocr", "tesserocr"]
 
 VALUE_READERS = {
     reader: getattr(ocr_processing, f"{reader}_values_reader")
@@ -68,6 +69,8 @@ def read_nivo_table(
     clips: tuple[int, int, int, int],
     table_shape: tuple[int, int],
     ocr_objects: dict[str, Any],
+    multi_row_station_names: bool,
+    from_extracted_structure: bool,
     station_char_shape: tuple[int, int] = (12, 10),
     number_char_shape: tuple[int, int] = (12, 20),
     roi_padding: int = 3,
@@ -88,10 +91,12 @@ def read_nivo_table(
         Clipping margins (up, down, left, right) to apply to the table region.
     table_shape : tuple[int, int]
         The expected (width, height) of the table in the image.
-    anagrafica : list[str]
-        A list of known station names used for matching and validation.
     ocr_objects : dict[str, Any]
         A record of instantiated and tagged reader objects.
+    multi_row_station_names : bool
+        Whether station names can span multiple rows.
+    from_extracted_structure : bool
+        Detect table by first removing contents
     station_char_shape : tuple[int, int], optional
         The approximate shape (width, height) of characters in station names. Default is (12, 10).
     number_char_shape : tuple[int, int], optional
@@ -115,24 +120,40 @@ def read_nivo_table(
     if debug_dir:
         debug_dir = Path(debug_dir)
         debug_dir.mkdir(parents=True, exist_ok=True)
-        debug_image = original_image.copy()
 
     # Preprocessing
     image, threshold_image, binarized_image = preprocess(
         original_image,
-        deskew_method="nivo",
+        deskew_method="img2table",
         configuration=PreprocessConfiguration(),
     )
 
     # Detect table rectangle
-    image_region = try_detect_table_rect(image, table_shape, ThresholdConfiguration())
+    detector = NivoTableDetection(
+        "detector", table_shape, ThresholdConfiguration(), from_extracted_structure
+    )
+    # image_region = try_detect_table_rect(image, table_shape, ThresholdConfiguration())
+    detection_result = detector(image)[0]
+    image_region = None if detection_result is None else detection_result[0]
 
     if image_region is None:
         raise ValueError("Could not detect table rectangle in image")
 
+    if debug_dir:
+        debug_image = image.copy()
+        save_artifacts(
+            {"01_table_rect": draw_bounding_boxes(debug_image, [image_region])},
+            debug_dir,
+        )
+    else:
+        debug_image = None
+
     # Cut out table
     _, binarized_subtable = cut_out_tables(binarized_image, image_region, clips)
     _, threshold_subtable = cut_out_tables(threshold_image, image_region, clips)
+
+    if debug_dir:
+        save_artifacts({"02_binarized_subtable": binarized_subtable}, debug_dir)
 
     # Remove lines
     binarized_subtable_wo_lines = remove_lines_from_image(
@@ -140,26 +161,27 @@ def read_nivo_table(
         LinesExtractionConfiguration(),
     )
 
+    if debug_dir:
+        save_artifacts(
+            {"03_binarized_subtable_wo_lines": binarized_subtable_wo_lines}, debug_dir
+        )
+
     # Detect rows and columns
     rows_centers = detect_rows_positions(
         binarized_subtable_wo_lines, nchars_threshold, number_char_shape
     ).tolist()
     cols_separators = detect_column_separators(threshold_subtable, number_char_shape[0])
 
-    # Save debug artifacts if requested
     if debug_dir:
         save_artifacts(
             {
-                "01_table_rect": draw_bounding_boxes(debug_image, [image_region]),  # pyright: ignore[reportPossiblyUnboundVariable]
-                "02_binarized_subtable": binarized_subtable,
-                "03_binarized_subtable_wo_lines": binarized_subtable_wo_lines,
                 "04_lines": draw_straight_lines(
                     draw_straight_lines(
                         binarized_subtable_wo_lines, rows_centers, "horizontal"
                     ),
                     cols_separators,
                     "vertical",
-                ),
+                )
             },
             debug_dir,
         )
@@ -174,23 +196,29 @@ def read_nivo_table(
         rows_centers,
         cols_separators,
         station_char_shape,
+        multi_row_station_names,
         name_readers,
         roi_padding,
+        debug_image,
     )
 
-    # if debug_dir:
-    #     for reader_tag in ocr_objects.keys():
-    #         save_artifacts(
-    #             {
-    #                 f"05_station_names_bboxes_{reader_tag}": draw_bounding_boxes(
-    #                     binarized_subtable_wo_lines,
-    #                     names_reading_results.filter(pl.col("reader").eq(reader_tag))[
-    #                         "bounding_box"
-    #                     ].to_list(),
-    #                 )
-    #             },
-    #             debug_dir,
-    #         )
+    if debug_dir:
+        for reader_tag in ocr_objects.keys():
+            bboxes = [
+                (bb["x"], bb["y"], bb["width"], bb["height"])
+                for bb in names_reading_results.filter(pl.col("reader").eq(reader_tag))[
+                    "bounding_box"
+                ].to_list()
+            ]
+            save_artifacts(
+                {
+                    f"05_station_names_bboxes_{reader_tag}": draw_bounding_boxes(
+                        binarized_subtable_wo_lines,
+                        bboxes,
+                    )
+                },
+                debug_dir,
+            )
 
     # Read values
     value_readers = {
@@ -206,6 +234,24 @@ def read_nivo_table(
         roi_padding,
         extra_width,
     )
+
+    if debug_dir:
+        for reader_tag in ocr_objects.keys():
+            bboxes: list[Rect] = [
+                (bb["x"], bb["y"], bb["width"], bb["height"])
+                for bb in value_reading_results.filter(pl.col("reader").eq(reader_tag))[
+                    "bounding_box"
+                ].to_list()
+            ]
+            save_artifacts(
+                {
+                    f"06_value_bboxes_{reader_tag}": draw_bounding_boxes(
+                        binarized_subtable_wo_lines,
+                        bboxes,
+                    )
+                },
+                debug_dir,
+            )
 
     value_reading_results = value_reading_results.with_columns(
         column=pl.col("column") + 1

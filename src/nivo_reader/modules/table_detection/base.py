@@ -18,33 +18,19 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, final, override
+from typing import Any
 
-import polars as pl
+from cv2.typing import MatLike, Rect
+
 from fancy_dataclass import JSONBaseDataclass
 
 
 @dataclass
-class ReadingTransformation(JSONBaseDataclass, ABC):
+class TableDetection(JSONBaseDataclass, ABC):
+    name: str
+
     @abstractmethod
-    def __call__(self, df: pl.DataFrame, *args: Any, **kwds: Any) -> pl.DataFrame:
-        raise NotImplementedError()
-
-
-@final
-class ReadingTransformationPipeline(ReadingTransformation):
-    def __init__(self, *transformations: ReadingTransformation):
-        super().__init__()
-        self.transformations = transformations
-
-    @override
-    def __call__(self, df: pl.DataFrame, *args: Any, **kwds: Any) -> pl.DataFrame:
-        for transformation in self.transformations:
-            df = transformation(df, *args, **kwds)
-        return df
-
-@final
-class NoOp(ReadingTransformation):
-    @override
-    def __call__(self, df: pl.DataFrame, *args: Any, **kwds: Any) -> pl.DataFrame:
-        return df
+    def __call__(
+        self, image: MatLike, previous_work: dict[str, Any] | None = None
+    ) -> tuple[list[Rect] | None, dict[str, Any]]:
+        pass

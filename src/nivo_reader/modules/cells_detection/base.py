@@ -16,20 +16,20 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-from typing import final
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any
 
-import polars as pl
-
-from nivo_reader.modules.reading_transformation.custom_substitution import (
-    CustomSubstitution,
-)
+from fancy_dataclass import JSONBaseDataclass
+from cv2.typing import MatLike, Rect
 
 
-@final
-class FilterCharacters(CustomSubstitution):
-    def __init__(self, allowlist: str, *where: pl.Expr):
-        super().__init__(
-            "content",
-            pl.col("content").str.replace_all(r"[^" + allowlist + "]", ""),
-            *where,
-        )
+@dataclass
+class CellsDetection(JSONBaseDataclass, ABC):
+    name: str
+
+    @abstractmethod
+    def __call__(
+        self, image: MatLike, table_rect: Rect
+    ) -> tuple[list[Rect], list[tuple[int, int]], dict[str, Any]]:
+        pass

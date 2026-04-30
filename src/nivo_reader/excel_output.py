@@ -166,6 +166,8 @@ def save_artifacts(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for name, image in artifacts.items():
+        if image.size == 0:
+            continue
         _ = cv2.imwrite(str(output_dir / f"{name}.jpg"), image)
 
 

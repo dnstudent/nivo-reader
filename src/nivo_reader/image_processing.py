@@ -364,7 +364,8 @@ def ms_binary(
 
 def ms_threshold(image: MatLike, configuration: ThresholdConfiguration) -> MatLike:
     """
-    Apply Otsu's thresholding and morphological closing.
+    Apply Otsu's thresholding and morphological closing to the inverted grayscale image.
+    Expects white background in input, gives white foreground in output
 
     Parameters
     ----------
@@ -376,7 +377,7 @@ def ms_threshold(image: MatLike, configuration: ThresholdConfiguration) -> MatLi
     Returns
     -------
     MatLike
-        Thresholded image.
+        Thresholded image. Foreground is white.
     """
     if image.ndim > 2:
         image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)

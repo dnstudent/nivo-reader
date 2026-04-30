@@ -16,29 +16,27 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-from typing import override
+from typing import Any, final, override
 
 import polars as pl
 
 from .base import ReadingTransformation
 
 
-class CustomSubstitution(ReadingTransformation):
-    replace_in: str
-    replacement: pl.Expr
-    conditions: tuple[pl.Expr, ...]
-
-    def __init__(self, replace_in: str, replacement: pl.Expr, *conditions: pl.Expr):
-        super().__init__()
-        self.replace_in = replace_in
-        self.replacement = replacement
+@final
+class ReplaceCharacters(ReadingTransformation):
+    def __init__(self, column: str, mapping: dict[str, str], *conditions: pl.Expr):
+        self.column = column
+        self.mapping = mapping
         self.conditions = conditions
 
     @override
-    def __call__(self, df: pl.DataFrame) -> pl.DataFrame:
-        return df.with_columns(
-            pl.when(pl.Expr.or_(*self.conditions))
-            .then(self.replacement)
-            .otherwise(pl.col(self.replace_in))
-            .alias(self.replace_in)
-        )
+    def __call__(self, df: pl.DataFrame, *args: Any, **kwds: Any) -> pl.DataFrame:
+        for what, with_ in self.mapping.items():
+            df = df.with_columns(
+                pl.when(pl.Expr.and_(*self.conditions))
+                .then(pl.col(self.column).str.replace_all(what, with_, literal=True))
+                .otherwise(pl.col(self.column))
+                .alias(self.column)
+            )
+        return df
