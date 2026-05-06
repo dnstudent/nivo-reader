@@ -239,12 +239,11 @@ def digitize_scans_batch(
     if "clips" not in config or "table_shape" not in config:
         logging.error(
             "✗ Error: 'clips' and 'table_shape' must be provided via CLI or TOML config."
+            + f"\nCurrent config: {config}"
         )
         return
 
-    for img_path in tqdm(
-        images_to_process, desc="Processing images"
-    ):  # pyrefly: ignore
+    for img_path in tqdm(images_to_process, desc="Processing images"):  # pyrefly: ignore
         results = extract_digitizations(
             image_paths=[img_path],
             clips=tuple(config["clips"]),

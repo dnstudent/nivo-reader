@@ -12,6 +12,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 dependencies = [
+  "config-wrangler>=1.5.0",
   "easyocr>=1.7.3",
   "fancy-dataclass>=0.10.2",
   "fastexcel>=0.16.0",
@@ -25,14 +26,12 @@ dependencies = [
   "pillow>=10.0.0",
   "polars-distance>=0.5.3",
   "polars[all]>=1.35.2",
+  "pydantic>=2.12.5",
   "pytesseract>=0.3.13",
-  "python-doctr[contrib]>=1.0.1",
   "scikit-learn>=1.7.2",
   "scipy>=1.16.3",
-  "surya-ocr>=0.17.1",
   "tesserocr>=2.10.0",
   "tqdm>=4.67.1",
-  "transformers<5",
   "xlsxwriter>=3.2.9",
 ]
 
