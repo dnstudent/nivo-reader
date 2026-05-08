@@ -53,10 +53,11 @@ class AssociateClosestMatch(ReadingTransformation, JSONDataclass):
                 suffix="_reference",
             )
             .with_columns(
-                distance=(
-                    pl.col("simplified")  # pyright: ignore[reportUnknownMemberType]
+                (
+                    pl.col("simplified")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
                     .dist_str.levenshtein("simplified_reference")  # pyright: ignore[reportAttributeAccessIssue]
                     .cast(pl.Int32)
+                    .alias("distance")
                 )
             )
             .sort("index", "distance")
