@@ -5,6 +5,7 @@ notebooks/
 *.code-workspace
 .vscode
 *.dontuse
+pyrightconfig.json
 
 # Python-generated files
 __pycache__/
