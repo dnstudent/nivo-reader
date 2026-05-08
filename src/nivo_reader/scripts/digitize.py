@@ -179,6 +179,22 @@ def digitize(
         scan_config.nchars_threshold,
         scan_config.extra_width,
         debug_dir,
+    ).cast(
+        {
+            "content": pl.String,
+            "confidence": pl.Float32,
+            "bounding_box": pl.Struct(
+                {
+                    "x": pl.Int16,
+                    "y": pl.Int16,
+                    "width": pl.Int16,
+                    "height": pl.Int16,
+                }
+            ),
+            "row": pl.Int8,
+            "column": pl.Int8,
+            "reader": pl.Categorical("reader"),
+        }
     )
 
 
@@ -206,7 +222,7 @@ def setup_environment(args: argparse.Namespace):
         logging.basicConfig(
             level=script_config.logging_level,
             filename=Path(debug_dir) / "reader.log",
-            filemode="w",
+            filemode="a",
             format="[%(asctime)s][%(levelname)s]%(name)s - %(message)s",
         )
     else:
@@ -230,7 +246,7 @@ def main():
                 or not mkopath(
                     path,
                     script_config.output_dir,
-                    new_suffix=".json",
+                    new_suffix=".arrow",
                 ).exists()
             )
         )
@@ -239,7 +255,7 @@ def main():
         lambda entry: (
             entry[0],
             entry[1],
-            mkopath(entry[0], script_config.output_dir, new_suffix=".json"),
+            mkopath(entry[0], script_config.output_dir, new_suffix=".arrow"),
         ),
         build_config_stack(
             root=script_config.project_dir,
@@ -281,7 +297,7 @@ def main():
             scan = load_image(scan_path)
             df = digitize(scan, scan_config, ocrs, scan_debug_dir)
             scan_output.parent.mkdir(parents=True, exist_ok=True)
-            df.write_json(scan_output)
+            df.write_ipc(scan_output, compression="zstd")
             pbar.write(
                 f"✓ Processed: {scan_path.relative_to(script_config.project_dir)}"
             )
