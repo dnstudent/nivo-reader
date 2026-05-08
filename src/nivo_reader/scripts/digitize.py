@@ -27,12 +27,19 @@ from cv2.typing import MatLike
 import numpy as np
 import polars as pl
 from PIL import Image
-from pydantic import BaseModel, DirectoryPath, NonNegativeInt, PositiveInt
+from pydantic import (
+    BaseModel,
+    DirectoryPath,
+    FilePath,
+    NonNegativeInt,
+    PositiveInt,
+    Field,
+)
 from tqdm import tqdm
 
 
 from nivo_reader.nivo_reader import read_nivo_table
-from nivo_reader.scripts.utils.paths import build_config_stack, filter_stack
+from nivo_reader.scripts.utils.paths import build_config_stack, mkopath
 
 
 # Suppress pin_memory warnings from PyTorch/EasyOCR
@@ -49,38 +56,42 @@ class RectSpec(BaseModel):
 
 class ClipSpec(BaseModel):
     top: NonNegativeInt
-    bottom: NonNegativeInt = 0
-    left: NonNegativeInt = 0
-    right: NonNegativeInt = 0
+    bottom: NonNegativeInt
+    left: NonNegativeInt
+    right: NonNegativeInt
 
 
 class PipelineConfig(BaseModel):
     table_shape: RectSpec
     clips: ClipSpec
-    station_char_shape: RectSpec = RectSpec(width=12, height=10)
-    number_char_shape: RectSpec = RectSpec(width=12, height=20)
-    roi_padding: NonNegativeInt = 3
-    nchars_threshold: NonNegativeInt = 20
-    extra_width: NonNegativeInt = 6
-    multi_row_station_names: bool = False
-    from_extracted_structure: bool = False
+    station_char_shape: RectSpec
+    number_char_shape: RectSpec
+    roi_padding: NonNegativeInt
+    nchars_threshold: NonNegativeInt
+    extra_width: NonNegativeInt
+    multi_row_station_names: bool
+    from_extracted_structure: bool
 
 
 class AppConfig(BaseModel):
     output_dir: Path
-    scans_dir: DirectoryPath
+    project_dir: DirectoryPath
     debug_dir: Path | None = None
     image_formats: set[str] = {"png", "jpg", "jpeg", "gif"}
     overwrite: bool = False
     ocr_engines: set[str] = {"tesseract", "easyocr", "paddleocr"}
     pipeline_config_fname: str = "config.toml"
+    input_path: FilePath | DirectoryPath = Field(
+        default_factory=lambda data: data["project_dir"]
+    )
+    logging_level: int
 
 
-_OCR_CACHE = {}
+_OCR_CACHE: dict[str, Any] = {}
 
 
-def get_ocrs(ocr_engines: set[str]) -> dict[str, Any]:
-    ocrs = {}
+def get_ocrs(ocr_engines: set[str]):
+    ocrs: dict[str, Any] = {}
     for engine in ocr_engines:
         if engine in _OCR_CACHE:
             ocrs[engine] = _OCR_CACHE[engine]
@@ -131,49 +142,6 @@ def load_image(image_path: Path) -> np.ndarray:
         raise ValueError(f"Could not load image {image_path}: {e}")
 
 
-def scan_output_dir(
-    root_output_dir: Path, scan_input_path: Path, scans_dir: Path
-) -> Path:
-    """Generate output Excel file path for an image.
-
-    Args:
-        output_dir: Output directory for Excel files
-        image_path: Path to the input image
-        images_dir: Base directory containing images
-
-    Returns:
-        Path to the output Excel file
-    """
-    return root_output_dir / scan_input_path.relative_to(scans_dir)
-
-
-def compose_output_path(
-    output_dir: Path, scan_input_path: Path, scans_dir: Path
-) -> Path:
-    return (
-        scan_output_dir(output_dir, scan_input_path, scans_dir)
-        / "raw_digitization.json"
-    )
-
-
-def already_digitized(output_dir: Path, path: Path, scans_dir: Path) -> bool:
-    return compose_output_path(output_dir, path, scans_dir).exists()
-
-
-def compose_debug_dir(debug_dir: Path, image_path: Path, images_dir: Path) -> Path:
-    """Generate debug directory path for an image.
-
-    Args:
-        debug_dir: Base directory for debug artifacts
-        image_path: Path to the input image
-        images_dir: Base directory containing images
-
-    Returns:
-        Path to the debug directory for this image
-    """
-    return debug_dir / image_path.relative_to(images_dir) / ""
-
-
 def digitize(
     scan: MatLike,
     scan_config: PipelineConfig,
@@ -214,75 +182,113 @@ def digitize(
     )
 
 
-def main():
-    parser = create_argparser()
-    args = parser.parse_args()
-
+def setup_environment(args: argparse.Namespace):
     cli_params = {
         k: v
         for k, v in vars(args).items()
         if v is not None and k in AppConfig.model_fields
     }
+    if "input_path" in cli_params and not Path(cli_params["input_path"]).is_absolute():
+        cli_params["input_path"] = cli_params["project_dir"] / cli_params["input_path"]
     script_config = AppConfig(**cli_params)
 
-    scans_dir = script_config.scans_dir
     # Validate images directory
-    if not scans_dir.exists():
-        logging.error(f"Error: Images directory not found: {scans_dir}")
+    if not script_config.input_path.is_file() and not script_config.input_path.is_dir():
+        logging.error(f"Error: Input path {script_config.input_path} not valid")
         sys.exit(1)
 
     output_dir = script_config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    overwrite = script_config.overwrite
-    image_formats = script_config.image_formats
-
     debug_dir = script_config.debug_dir
     if debug_dir:
         Path(debug_dir).mkdir(exist_ok=True, parents=True)
         logging.basicConfig(
-            level=logging.INFO,
+            level=script_config.logging_level,
             filename=Path(debug_dir) / "reader.log",
             filemode="w",
             format="[%(asctime)s][%(levelname)s]%(name)s - %(message)s",
         )
     else:
-        logging.basicConfig(level=logging.ERROR)
+        logging.basicConfig(level=script_config.logging_level)
 
     logging.info(f"engines: {script_config.ocr_engines}")
+    return script_config
 
-    # Configuration discovery
-    scan_config_stack = build_config_stack(
-        root=scans_dir,
-        model=PipelineConfig,
-        config_filename=script_config.pipeline_config_fname,
-    )
+
+def main():
+    parser = create_argparser()
+    args = parser.parse_args()
+    script_config = setup_environment(args)
 
     def to_digitize(path: Path) -> bool:
-        return path.suffix.strip(".") in image_formats and (
-            overwrite or not already_digitized(output_dir, path, scans_dir)
+        return (
+            path.is_file()
+            and (path.suffix.strip(".") in script_config.image_formats)
+            and (
+                script_config.overwrite
+                or not mkopath(
+                    path,
+                    script_config.output_dir,
+                    new_suffix=".json",
+                ).exists()
+            )
         )
 
-    scan_config_stack = filter_stack(scan_config_stack, to_digitize)
-    scan_items = sorted(scan_config_stack.items(), key=lambda x: x[0])
+    iostack = map(
+        lambda entry: (
+            entry[0],
+            entry[1],
+            mkopath(entry[0], script_config.output_dir, new_suffix=".json"),
+        ),
+        build_config_stack(
+            root=script_config.project_dir,
+            start=script_config.input_path,
+            model=PipelineConfig,
+            config_filename=script_config.pipeline_config_fname,
+        ),
+    )
+
+    scan_config_stack = sorted(
+        # Keep only entries that should be digitized (according to file format and overwrite rules)
+        filter(
+            lambda entry: to_digitize(entry[0]),
+            # Build the configuration tree
+            iostack,
+        ),
+        key=lambda x: x[2],
+    )
 
     ocrs = get_ocrs(script_config.ocr_engines)
 
-    pbar = tqdm(scan_items, desc="Processing scans")
-    for scan_path, scan_config in pbar:
+    pbar = tqdm(scan_config_stack, desc="Processing scans")
+    for scan_path, scan_config, scan_output in pbar:
+        logging.debug(
+            f"Reading from {scan_path} to {scan_output} with conf {scan_config}"
+        )
+        if scan_config is None:
+            pbar.write(
+                f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: the configuration is invalid. Check the log."
+            )
+            continue
         pbar.set_description(f"Processing {scan_path.name}")
         scan_debug_dir = (
-            compose_debug_dir(debug_dir, scan_path, scans_dir) if debug_dir else None
+            mkopath(scan_path, Path(script_config.debug_dir), mkdir=True)
+            if script_config.debug_dir
+            else None
         )
         try:
             scan = load_image(scan_path)
             df = digitize(scan, scan_config, ocrs, scan_debug_dir)
-            out = compose_output_path(output_dir, scan_path, scans_dir)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            df.write_json(out)
-            tqdm.write(f"✓ Processed: {scan_path.relative_to(scans_dir)}")
+            scan_output.parent.mkdir(parents=True, exist_ok=True)
+            df.write_json(scan_output)
+            pbar.write(
+                f"✓ Processed: {scan_path.relative_to(script_config.project_dir)}"
+            )
         except Exception as e:
-            tqdm.write(f"✗ Error processing {scan_path.relative_to(scans_dir)}: {e}")
+            pbar.write(
+                f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: {e}"
+            )
             logging.exception(f"Error processing {scan_path}: {e}")
 
 
@@ -295,11 +301,11 @@ def create_argparser() -> argparse.ArgumentParser:
 
     # Input/Output arguments
     _ = parser.add_argument(
-        "-s",
-        "--scans-dir",
-        required=True,
+        "-i",
+        "--input-path",
+        required=False,
         type=Path,
-        help="Directory containing input images",
+        help="Subset of the images to process. Could be a directory or a single image. Default is the project root.",
     )
     _ = parser.add_argument(
         "-o",
@@ -312,9 +318,16 @@ def create_argparser() -> argparse.ArgumentParser:
         "-d",
         "--debug-dir",
         type=Path,
+        required=False,
         help="Base directory for debug artifacts. Optional.",
     )
-
+    _ = parser.add_argument(
+        "-p",
+        "--project-dir",
+        type=Path,
+        required=True,
+        help="The main directory of the project containing the NIVO table images in a subdirectory.",
+    )
     # Overwrite flag
     _ = parser.add_argument(
         "-w",
@@ -337,6 +350,7 @@ def create_argparser() -> argparse.ArgumentParser:
         help=f"Comma-separated list of OCR engines to use. Available engines: tesseract, tesserocr, easyocr, paddleocr. Default: {','.join(AppConfig.model_fields['ocr_engines'].default)}",
     )
 
+    _ = parser.add_argument("--logging-level", type=int, default=logging.INFO)
     return parser
 
 

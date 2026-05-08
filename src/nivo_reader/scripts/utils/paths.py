@@ -1,6 +1,8 @@
+from collections.abc import Generator
+from os import PathLike
 from pathlib import Path
 import logging
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 from pydantic import BaseModel, ValidationError
 from configurator import Config, default_mergers
 
@@ -15,8 +17,8 @@ def discover_files(input_dir: Path, name_pattern: str) -> list[Path]:
     return list(input_dir.rglob(name_pattern))
 
 
-def _merge_replace(_env, _source, target):
-    return target
+def _merge_replace(_env: Any, _source: Any, _target: Any):
+    raise Exception("This is bugged. Don't use")
 
 
 def merge_configs(parent: Config, local: Config) -> Config:
@@ -33,60 +35,90 @@ def load_fconf(path: Path):
 
 
 M = TypeVar("M", bound=BaseModel)
+P = TypeVar("P")
 
 
 def build_config_stack(
-    root,
+    root: PathLike[str] | Path,
     model: type[M],
+    start: PathLike[str] | Path | None = None,
     section: str | None = None,
     config_filename: str = "config.toml",
     base_config: Config | None = None,
-) -> dict[Path, M]:
+) -> Generator[tuple[Path, M | None], None, None]:
     """
     Traverse the directory tree starting at `root`, collecting the effective
-    configuration for every regular file (not the config file itself).
+    configuration for every regular file by merging nested dictionaries.
 
     Returns a mapping: file_path -> merged configuration dict.
     """
     base = base_config or Config()
-    file_configs: dict[Path, M] = {}
+    # file_configs: dict[Path, M] = {}
+    root = Path(root)
+    if start is None:
+        start = root
 
-    def walk(directory: Path, parent_config: Config):
-        # 1. Load local TOML config and merge with parent
-        config_path = directory / config_filename
-        if config_path.is_file():
-            local_config = Config.from_path(config_path)  # pyright: ignore[reportUnknownMemberType]
-            current_config = merge_configs(parent_config, local_config)
-        else:
-            current_config = parent_config
+    def walk(
+        path: Path, parent_config: Config
+    ) -> Generator[tuple[Path, M | None], None, None]:
+        if not path.name.startswith("."):
+            # Nodes
+            if path.is_dir():
+                # Update the config
+                config_path = path / config_filename
+                if config_path.is_file():
+                    local_overrides = Config.from_path(config_path)  # pyright: ignore[reportUnknownMemberType]
+                    dir_config = merge_configs(parent_config, local_overrides)
+                else:
+                    dir_config = parent_config
 
-        # 2. Assign config to files, recurse into subdirectories
-        for entry in directory.iterdir():
-            if entry.name == config_filename or entry.suffix == ".toml":
-                continue  # skip the config file itself
-            if entry.is_file():
-                file_config = merge_configs(current_config, load_fconf(entry))
+                for entry in path.iterdir():
+                    yield from walk(entry, dir_config)
+            # Leaves
+            elif (
+                path.is_file()
+                and path.is_relative_to(start)
+                and not path.suffix == ".toml"
+            ):
+                file_config = merge_configs(parent_config, load_fconf(path))
                 try:
+                    file_config = cast(dict[str, Any], file_config.data)
                     relevant_section = (
-                        file_config.data[section]  # pyright: ignore[reportUnknownMemberType]
-                        if section is not None
-                        else file_config.data  # pyright: ignore[reportUnknownMemberType]
+                        file_config[section] if section is not None else file_config
                     )
-                    file_configs[entry] = model.model_validate(relevant_section)
+                    yield path, model.model_validate(relevant_section)
                 except ValidationError as ve:
                     logging.error(
-                        f"validation error for {entry} with {file_config}: {ve}"
+                        f"validation error for {path} with {file_config}: {ve}"
                     )
-                except KeyError as ke:
-                    logging.error(
-                        f"key '{section}' not found in config for {entry} with {file_config}: {ke}"
+                    yield path, None
+                except Exception as ke:
+                    logging.exception(
+                        f"key '{section}' not found in config for {path} with {file_config}: {ke}"
                     )
-            elif entry.is_dir():
-                walk(entry, current_config)
+                    yield path, None
 
-    walk(Path(root), base)
-    return file_configs
+    return walk(root, base)
 
 
-def filter_stack(stack, predicate):
-    return {k: v for k, v in stack.items() if predicate(k)}  # pyright: ignore[reportUnknownMemberType]
+def mkopath(
+    input_path: Path,
+    output_dir: Path,
+    new_suffix: str | None = None,
+    mkdir: bool = False,
+) -> Path:
+    """Utility.
+
+    Args:
+        output_dir: Output directory for Excel files
+        image_path: Path to the input image
+
+    Returns:
+        Path to the output Excel file
+    """
+    newpath = output_dir / input_path.name
+    if new_suffix:
+        newpath = newpath.with_suffix(new_suffix)
+    if mkdir:
+        newpath.mkdir(parents=True, exist_ok=True)
+    return newpath
