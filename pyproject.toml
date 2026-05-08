@@ -12,7 +12,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 dependencies = [
-  "config-wrangler>=1.5.0",
+  "configurator>=3.2.0",
   "easyocr>=1.7.3",
   "fancy-dataclass>=0.10.2",
   "fastexcel>=0.16.0",
