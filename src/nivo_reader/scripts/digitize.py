@@ -39,13 +39,26 @@ from nivo_reader.scripts.utils.paths import build_config_stack, filter_stack
 warnings.filterwarnings("ignore", message=".*pin_memory.*")
 logging.getLogger("paddlex").setLevel(logging.ERROR)
 logging.getLogger("paddle").setLevel(logging.ERROR)
+logging.getLogger("pytesseract").setLevel(logging.ERROR)
+
+
+class RectSpec(BaseModel):
+    width: PositiveInt
+    height: PositiveInt
+
+
+class ClipSpec(BaseModel):
+    top: NonNegativeInt
+    bottom: NonNegativeInt = 0
+    left: NonNegativeInt = 0
+    right: NonNegativeInt = 0
 
 
 class PipelineConfig(BaseModel):
-    table_shape: tuple[PositiveInt, PositiveInt]
-    clips: tuple[NonNegativeInt, NonNegativeInt, NonNegativeInt, NonNegativeInt]
-    station_char_shape: tuple[PositiveInt, PositiveInt] = (12, 10)
-    number_char_shape: tuple[PositiveInt, PositiveInt] = (12, 20)
+    table_shape: RectSpec
+    clips: ClipSpec
+    station_char_shape: RectSpec = RectSpec(width=12, height=10)
+    number_char_shape: RectSpec = RectSpec(width=12, height=20)
     roi_padding: NonNegativeInt = 3
     nchars_threshold: NonNegativeInt = 20
     extra_width: NonNegativeInt = 6
@@ -167,15 +180,33 @@ def digitize(
     ocrs: dict[str, Any],
     debug_dir: Path | None,
 ) -> pl.DataFrame:
+    clips = (
+        scan_config.clips.top,
+        scan_config.clips.bottom,
+        scan_config.clips.left,
+        scan_config.clips.right,
+    )
+    table_shape = (
+        scan_config.table_shape.width,
+        scan_config.table_shape.height,
+    )
+    station_char_shape = (
+        scan_config.station_char_shape.width,
+        scan_config.station_char_shape.height,
+    )
+    number_char_shape = (
+        scan_config.number_char_shape.width,
+        scan_config.number_char_shape.height,
+    )
     return read_nivo_table(
         scan,
-        scan_config.clips,
-        scan_config.table_shape,
+        clips,
+        table_shape,
         ocrs,
         scan_config.multi_row_station_names,
         scan_config.from_extracted_structure,
-        scan_config.station_char_shape,
-        scan_config.number_char_shape,
+        station_char_shape,
+        number_char_shape,
         scan_config.roi_padding,
         scan_config.nchars_threshold,
         scan_config.extra_width,
@@ -210,7 +241,7 @@ def main():
     if debug_dir:
         Path(debug_dir).mkdir(exist_ok=True, parents=True)
         logging.basicConfig(
-            level=logging.DEBUG,
+            level=logging.INFO,
             filename=Path(debug_dir) / "reader.log",
             filemode="w",
             format="[%(asctime)s][%(levelname)s]%(name)s - %(message)s",
@@ -233,11 +264,13 @@ def main():
         )
 
     scan_config_stack = filter_stack(scan_config_stack, to_digitize)
+    scan_items = sorted(scan_config_stack.items(), key=lambda x: x[0])
+
     ocrs = get_ocrs(script_config.ocr_engines)
 
-    for scan_path, scan_config in tqdm(
-        scan_config_stack.items(), desc="Processing images"
-    ):
+    pbar = tqdm(scan_items, desc="Processing scans")
+    for scan_path, scan_config in pbar:
+        pbar.set_description(f"Processing {scan_path.name}")
         scan_debug_dir = (
             compose_debug_dir(debug_dir, scan_path, scans_dir) if debug_dir else None
         )
