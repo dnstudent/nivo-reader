@@ -182,10 +182,34 @@ def merge_same_line_boxes(boxes: list[Rect], line_height: int) -> list[Rect]:
     return merged_boxes
 
 
+def _pick_a_box(row: int, boxes: list[Rect]):
+    available = list(
+        filter(
+            lambda box: box[1] < row and row < box[1] + box[3],
+            boxes,
+        )
+    )
+    return available[0] if len(available) > 0 else None
+
+
+def get_row_boxes(
+    rows: list[int], boxes: list[Rect], column_seps: tuple[int, int], char_height: int
+):
+    xleft = min([box[0] for box in boxes] or [column_seps[0]])
+    xright = max([box[0] + box[2] for box in boxes] or [column_seps[1]])
+    height = int(np.median([box[3] for box in boxes] or [char_height]))
+
+    def default_box(row: int) -> Rect:
+        return [xleft, int(row - height / 2), xright - xleft, height]
+
+    return [_pick_a_box(row, boxes) or default_box(row) for row in rows]
+
+
 def merge_and_filter_station_name_boxes(
     input_boxes: list[Rect],
     rows_positions: list[int],
     char_height: int,
+    column_seps: tuple[int, int],
     multi_rows: bool,
     debug_img: MatLike | None = None,
 ) -> list[Rect]:
@@ -233,57 +257,65 @@ def merge_and_filter_station_name_boxes(
 
     rows_positions = sorted(rows_positions)
 
-    output_boxes: list[Rect] = []
-
-    merged_boxes_centers = np.array(
-        [int(y + h / 2) for _, y, _, h in horizontally_merged_boxes]
+    # Just pick the first (highest) box that encloses the row
+    return get_row_boxes(
+        rows_positions, horizontally_merged_boxes, column_seps, char_height
     )
-    last_matched_box_i = -1
-    for row_position in rows_positions:
-        matching_name_box_i = (
-            int(
-                # TODO: sometimes the input list is empty
-                np.argmin(
-                    np.abs(
-                        merged_boxes_centers[last_matched_box_i + 1 :] - row_position
-                    )
-                )
-            )
-            + last_matched_box_i
-            + 1
-        )
 
-        if multi_rows:
-            to_merge_name_box_is = list(
-                takewhile(
-                    lambda i: _sorted_boxes_are_vertically_close(
-                        (
-                            horizontally_merged_boxes[i],
-                            horizontally_merged_boxes[i + 1],
-                        ),
-                        row_height,
-                    ),
-                    range(matching_name_box_i - 1, last_matched_box_i, -1),
-                )
-            )
+    # output_boxes: list[Rect] = []
 
-            if to_merge_name_box_is:
-                merged_box = merge_boxes(
-                    horizontally_merged_boxes[
-                        to_merge_name_box_is[-1] : matching_name_box_i + 1
-                    ]
-                )
-                if not merged_box:
-                    logger.error("Merged box is None")
-                    merged_box = horizontally_merged_boxes[matching_name_box_i]
-            else:
-                merged_box = horizontally_merged_boxes[matching_name_box_i]
-        else:
-            merged_box = horizontally_merged_boxes[matching_name_box_i]
-        last_matched_box_i = matching_name_box_i
-        output_boxes.append(merged_box)
+    # merged_boxes_centers = np.array(
+    #     [int(y + h / 2) for _, y, _, h in horizontally_merged_boxes]
+    # )
+    # last_matched_box_i = -1
+    # for row_position in rows_positions:
+    #     distances = merged_boxes_centers[last_matched_box_i + 1 :] - row_position
+    #     if len(distances) == 0:
+    #         distances = np.array([0])
+    #     matching_name_box_i = (
+    #         int(
+    #             # TODO: fix sometimes the input list is empty
+    #             np.argmin(np.abs(distances))
+    #         )
+    #         + last_matched_box_i
+    #         + 1
+    #     )
+    #     # quick and dirty trick
+    #     matching_name_box_i = max(
+    #         min(matching_name_box_i, len(horizontally_merged_boxes) - 1), 0
+    #     )
 
-    return output_boxes
+    #     if multi_rows:
+    #         to_merge_name_box_is = list(
+    #             takewhile(
+    #                 lambda i: _sorted_boxes_are_vertically_close(
+    #                     (
+    #                         horizontally_merged_boxes[i],
+    #                         horizontally_merged_boxes[i + 1],
+    #                     ),
+    #                     row_height,
+    #                 ),
+    #                 range(matching_name_box_i - 1, last_matched_box_i, -1),
+    #             )
+    #         )
+
+    #         if to_merge_name_box_is:
+    #             merged_box = merge_boxes(
+    #                 horizontally_merged_boxes[
+    #                     to_merge_name_box_is[-1] : matching_name_box_i + 1
+    #                 ]
+    #             )
+    #             if not merged_box:
+    #                 logger.error("Merged box is None")
+    #                 merged_box = horizontally_merged_boxes[matching_name_box_i]
+    #         else:
+    #             merged_box = horizontally_merged_boxes[matching_name_box_i]
+    #     else:
+    #         merged_box = horizontally_merged_boxes[matching_name_box_i]
+    #     last_matched_box_i = matching_name_box_i
+    #     output_boxes.append(merged_box)
+
+    # return output_boxes
 
 
 # TODO: move to nivo-specific section
@@ -320,8 +352,14 @@ def detect_station_boxes(
     word_boxes = list(extract_contours_boxes(word_blobs))
     word_boxes.sort(key=lambda r: r[1])
     filtered_wboxes = filter_by_size(word_boxes, char_shape)
+    # TODO: fix, this is horrible
     filtered_wboxes = merge_and_filter_station_name_boxes(
-        filtered_wboxes, rows_centers, char_shape[1], multi_rows, debug_image
+        filtered_wboxes,
+        rows_centers,
+        char_shape[1],
+        (0, column_image.shape[1]),
+        multi_rows,
+        debug_image,
     )
     return filtered_wboxes
 
