@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from os import PathLike
 from pathlib import Path
+import hashlib
 import logging
 from typing import Any, TypeVar, cast
 from pydantic import BaseModel, ValidationError
@@ -122,3 +123,11 @@ def mkopath(
     if mkdir:
         newpath.mkdir(parents=True, exist_ok=True)
     return newpath
+
+
+def get_sha256(filepath: Path) -> str:
+    sha256_hash = hashlib.sha256(usedforsecurity=False)
+    with open(filepath, "rb") as f:
+        for byte_block in iter(lambda: f.read(8192), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()

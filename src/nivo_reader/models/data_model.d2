@@ -1,0 +1,101 @@
+project: {
+  shape: sql_table
+  id: int {constraint: [primary_key]}
+  name: string {constraint: [unique]}
+  description: string
+}
+
+scan: {
+  shape: sql_table
+  sha256Hash: string
+  filename: string
+  project: int {constraint: [foreign_key]}
+  id: int {constraint: primary_key}
+  constraint: [unique(project, filename)]
+}
+
+preprocessingRun: {
+  shape: sql_table
+  id: int {constraint: [primary_key]}
+  project: int {constraint: [foreign_key]}
+  config: json
+  tag: string
+  createdAt: datetime
+  updatedAt: datetime
+  constraint: [unique(project, tag)]
+}
+
+preprocessedScan: {
+  shape: sql_table
+  id: int {constraint: primary_key}
+  scan: int {constraint: [foreign_key]}
+  run: int {constraint: [foreign_key]}
+  sha256Hash: string
+  constraint: [unique(scan, run)]
+}
+
+structureRun: {
+  shape: sql_table
+  id: int {constraint: [primary_key]}
+  project: int {constraint: [foreign_key]}
+  config: json
+  tag: string
+  createdAt: datetime
+  updatedAt: datetime
+  constraint: [unique(project, tag)]
+}
+
+
+tableStructure: {
+  shape: sql_table
+  id: int {constraint: [primary_key]}
+  preprocessedScan: int {constraint: [foreign_key]}
+  bbox: json
+  header: json
+  index: json
+  content: json
+  nRows: int
+  nCols: int
+  run: int {constraint: [foreign_key]}
+}
+
+cellStructure: {
+  shape: sql_table
+  id: int {constraint: [primary_key]}
+  table: int {constraint: [foreign_key]}
+  row: int
+  col: int
+  constraint: [unique(table, row, col)]
+}
+
+digitizationRun: {
+  shape: sql_table
+  id: int {constraint: [primary_key]}
+  project: int {constraint: [foreign_key]}
+  config: json
+  tag: string
+  ocr: string
+  createdAt: datetime
+  updatedAt: datetime
+  constraint: [unique(project, tag)]
+}
+
+cellContent: {
+  shape: sql_table
+  id: int {constraint: [primary_key]}
+  cell: int {constraint: [foreign_key]}
+  cellType: string
+  content: string
+}
+
+preprocessedScan.scan -> scan.id
+scan.project -> project.id
+tableStructure.preprocessedScan -> preprocessedScan.id
+cellStructure.table -> tableStructure.id
+cellContent.cell -> cellStructure.id
+tableStructure.run -> structureRun.id
+cellContent.run -> digitizationRun.id
+preprocessedScan.run -> preprocessingRun.id
+preprocessingRun.project -> project.id
+structureRun.project -> project.id
+digitizationRun.project -> project.id
