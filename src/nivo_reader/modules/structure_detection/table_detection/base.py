@@ -20,9 +20,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from cv2.typing import MatLike, Rect
+from cv2.typing import MatLike
 
 from fancy_dataclass import JSONBaseDataclass
+
+from nivo_reader.lib.common import BoundingBox
 
 
 @dataclass
@@ -32,5 +34,5 @@ class TableDetection(JSONBaseDataclass, ABC):
     @abstractmethod
     def __call__(
         self, image: MatLike, previous_work: dict[str, Any] | None = None
-    ) -> tuple[list[Rect] | None, dict[str, Any]]:
+    ) -> tuple[list[BoundingBox] | None, dict[str, Any]]:
         pass

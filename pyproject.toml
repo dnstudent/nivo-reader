@@ -18,7 +18,7 @@ dependencies = [
   "fastexcel>=0.16.0",
   "img2table>=1.4.2",
   "numpy>=2.3.5",
-  "opencv-contrib-python-headless>=4.11.0.86",
+  "opencv-contrib-python-headless>=4.13.0.92",
   "openpyxl>=3.1.5",
   "paddleocr[all]>=3.4.0",
   "paddlepaddle>=3.3.0",
@@ -40,6 +40,7 @@ Repository = "https://github.com/dnstudent/nivo-reader"
 
 [project.scripts]
 nivo-preprocess = "nivo_reader.scripts.preprocess:main"
+nivo-structure = "nivo_reader.scripts.structure_detection:main"
 nivo-read = "nivo_reader.scripts.digitize:main"
 nivo-fix = "nivo_reader.scripts.fix_digitization:main"
 nivo-writer = "nivo_reader.scripts.write_excel:main"

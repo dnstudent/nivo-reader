@@ -18,66 +18,102 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 from dataclasses import dataclass
+import logging
 from typing import final, override, Any
 
 from fancy_dataclass import JSONDataclass
 import cv2
-from cv2.typing import MatLike, Rect
+from cv2.typing import MatLike
 import numpy as np
 
 from nivo_reader.configuration.preprocessing import ThresholdConfiguration
 from nivo_reader.image_processing import my_table_struct
-
+from nivo_reader.lib.common import BoundingBox, RectShape
 from .base import TableDetection
 
 
 @final
 @dataclass
 class NivoTableDetection(TableDetection, JSONDataclass):
-    expected_table_shape: tuple[int, int]
+    expected_table_shape: RectShape
     threshold_configuration: ThresholdConfiguration
     from_extracted_structure: bool
 
     @override
     def __call__(
         self, image: MatLike, previous_work: dict[str, Any] | None = None
-    ) -> tuple[list[Rect] | None, dict[str, Any]]:
+    ) -> tuple[list[BoundingBox] | None, dict[str, Any]]:
         if previous_work and "_gray_image" in previous_work:
             gray_image = previous_work["_gray_image"]
+        elif image.ndim == 2:
+            gray_image = image
         else:
             gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        rect = try_detect_table_rect(
-            gray_image, self.expected_table_shape, self.threshold_configuration, self.from_extracted_structure
-        )
+        try:
+            rect = try_detect_table_rect(
+                gray_image,
+                self.expected_table_shape,
+                self.threshold_configuration,
+                self.from_extracted_structure,
+            )
+        except Exception:
+            logging.exception(
+                f"Could not detect table rectangle in image with {self.threshold_configuration} and expected shape {self.expected_table_shape} and from_extracted_structure {self.from_extracted_structure}"
+            )
+            rect = None
+
         if rect is None:
-            return None, previous_work or {}
+            try:
+                rect = try_detect_table_rect(
+                    gray_image,
+                    self.expected_table_shape,
+                    self.threshold_configuration,
+                    not self.from_extracted_structure,
+                )
+            except Exception:
+                logging.exception(
+                    f"Could not detect table rectangle in image with {self.threshold_configuration} and expected shape {self.expected_table_shape} and from_extracted_structure {not self.from_extracted_structure}"
+                )
+                rect = None
+
+        if rect is None:
+            otherdetect = ParmaNivoTableDetection("")
+            return otherdetect(image)
+
         return [rect], previous_work or {}
-    
+
+
 @final
 @dataclass
 class ParmaNivoTableDetection(TableDetection, JSONDataclass):
     @staticmethod
-    def bbox2rect(bbox: Any) -> Rect:
-        return (bbox.x1, bbox.y1, bbox.x2 - bbox.x1, bbox.y2 - bbox.y1)
-    
+    def bbox2bbox(bbox: Any) -> BoundingBox:
+        return BoundingBox(
+            x=bbox.x1, y=bbox.y1, width=bbox.x2 - bbox.x1, height=bbox.y2 - bbox.y1
+        )
+
     @override
-    def __call__(self, image: MatLike, previous_work: dict[str, Any] | None = None) -> tuple[list[Rect] | None, dict[str, Any]]:
+    def __call__(
+        self, image: MatLike, previous_work: dict[str, Any] | None = None
+    ) -> tuple[list[BoundingBox] | None, dict[str, Any]]:
         from img2table.document import Image
-        img = Image(cv2.imencode(".jpg", image)[1].tobytes(), detect_rotation=False)
+
+        img = Image(cv2.imencode(".png", image)[1].tobytes(), detect_rotation=False)
         tables = img.extract_tables(implicit_rows=True)
         if len(tables) > 0:
-            return list(map(lambda t: self.bbox2rect(t.bbox), tables)), previous_work or {}
+            return list(
+                map(lambda t: self.bbox2bbox(t.bbox), tables)
+            ), previous_work or {}
         else:
-            return None, previous_work or {}
-        
+            raise ValueError("Could not detect table rectangle")
 
 
 def try_detect_table_rect(
     gray_image: MatLike,
-    expected_table_shape: tuple[int, int],
+    expected_shape: RectShape,
     threshold_configuration: ThresholdConfiguration,
     from_extracted_structure: bool,
-) -> Rect | None:
+) -> BoundingBox | None:
     """
     Detect table rectangle in image.
 
@@ -85,7 +121,7 @@ def try_detect_table_rect(
     ----------
     gray_image : MatLike
         Grayscale image.
-    expected_table_shape : tuple[int, int]
+    expected_table_shape : RectShape
         Expected table (width, height).
     threshold_configuration : ThresholdConfiguration
         Threshold configuration.
@@ -99,23 +135,27 @@ def try_detect_table_rect(
     thresh = ms_threshold(gray_image, threshold_configuration)
     if from_extracted_structure:
         thresh = my_table_struct(thresh)
-    expected_table_width, expected_table_height = expected_table_shape
     bboxes = sorted(
         filter(
             lambda r: (
-                within_tolerance(r[2], expected_table_width, tol=0.1)
-                and within_tolerance(r[3], expected_table_height, tol=0.1)
+                within_tolerance(r[2], expected_shape.width, tol=0.05)
+                and within_tolerance(r[3], expected_shape.height, tol=0.05)
             ),
             map(
                 lambda cnt: cv2.boundingRect(cnt),
                 cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0],
             ),
         ),
-        key=lambda r: abs(expected_table_width * expected_table_height - r[2] * r[3]),
+        key=lambda r: abs(expected_shape.width * expected_shape.height - r[2] * r[3]),
     )
 
     if len(bboxes) > 0:
-        return bboxes[0]
+        bbox = BoundingBox.from_rect(bboxes[0])
+        bbox.x -= 3
+        bbox.y -= 3
+        bbox.width += 6
+        bbox.height += 3
+        return bbox
     else:
         return None
 
