@@ -30,7 +30,6 @@ from pydantic import (
     BaseModel,
     DirectoryPath,
     FilePath,
-    Field,
 )
 from sqlalchemy import JSON, String, create_engine, DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -40,6 +39,10 @@ from tqdm import tqdm
 from nivo_reader.lib.images import read_matlike_image
 from nivo_reader.modules.preprocessing.base import Preprocessor
 from nivo_reader.modules.preprocessing.automatic_rotation import Img2TableRotation
+
+
+STEP_NUMBER = "01"
+STEP_NAME = "preprocess"
 
 
 class Base(DeclarativeBase):
@@ -76,16 +79,14 @@ class PipelineConfig(BaseModel):
 class AppConfig(BaseModel):
     db_uri: str
     output_dir: Path
-    table_name: str = "rotations"
+    table_name: str = "preprocess"
     run_tag: str
     project_dir: DirectoryPath
     debug_dir: Path | None = None
     image_formats: set[str] = {"png", "jpg", "jpeg", "gif"}
     overwrite: bool = False
     pipeline_config_fname: str = "config.toml"
-    input_path: FilePath | DirectoryPath = Field(
-        default_factory=lambda data: data["project_dir"]
-    )
+    input_path: FilePath | DirectoryPath
     logging_level: int
 
 
@@ -115,8 +116,23 @@ def setup_environment(args: argparse.Namespace):
         for k, v in vars(args).items()
         if v is not None and k in AppConfig.model_fields
     }
-    if "input_path" in cli_params and not Path(cli_params["input_path"]).is_absolute():
-        cli_params["input_path"] = cli_params["project_dir"] / cli_params["input_path"]
+
+    project_dir = Path(cli_params.get("project_dir", args.project_dir))
+
+    cli_params["db_uri"] = f"sqlite:///{project_dir}/db.sqlite"
+    cli_params["output_dir"] = project_dir / f"{STEP_NUMBER}_{STEP_NAME}" / args.run_tag
+    cli_params["output_dir"].mkdir(parents=True, exist_ok=True)
+
+    if getattr(args, "debug", False):
+        cli_params["debug_dir"] = (
+            project_dir / "xx_debug" / f"{STEP_NUMBER}_{STEP_NAME}" / args.run_tag
+        )
+
+    if "input_path" not in cli_params:
+        cli_params["input_path"] = project_dir / "00_input"
+    elif not Path(cli_params["input_path"]).is_absolute():
+        cli_params["input_path"] = project_dir / cli_params["input_path"]
+
     script_config = AppConfig(**cli_params)
 
     # Validate images directory
@@ -177,13 +193,11 @@ def main():
             try:
                 scan_sha256 = get_sha256(scan_path)
 
-                run_output_dir = script_config.output_dir / script_config.run_tag
-                run_output_dir.mkdir(parents=True, exist_ok=True)
                 output_filename = scan_path.name.replace(scan_path.suffix, ".png")
                 # Trick to get the file that may be inside a subdir
                 output_file = (
-                    list(run_output_dir.rglob(f"**/{output_filename}"))
-                    + [run_output_dir / output_filename]
+                    list(script_config.output_dir.rglob(f"**/{output_filename}"))
+                    + [script_config.output_dir / output_filename]
                 )[0]
 
                 db_entry = (
@@ -250,25 +264,12 @@ def create_argparser() -> argparse.ArgumentParser:
         "--input-path",
         required=False,
         type=Path,
-        help="Subset of the images to process. Could be a directory or a single image. Default is the project root.",
-    )
-    _ = parser.add_argument(
-        "-o",
-        "--output-dir",
-        required=True,
-        type=Path,
-        help="Output directory for preprocessed images",
-    )
-    _ = parser.add_argument(
-        "--db-uri",
-        required=True,
-        type=str,
-        help="Database connection URI (e.g., sqlite:///preprocessing.db).",
+        help="Subset of the images to process. Could be a directory or a single image. Default is the project root's 00_input.",
     )
     _ = parser.add_argument(
         "--table-name",
         type=str,
-        default="rotations",
+        default="preprocess",
         help="Name of the table to store the results.",
     )
     _ = parser.add_argument(
@@ -279,10 +280,9 @@ def create_argparser() -> argparse.ArgumentParser:
     )
     _ = parser.add_argument(
         "-d",
-        "--debug-dir",
-        type=Path,
-        required=False,
-        help="Base directory for debug artifacts. Optional.",
+        "--debug",
+        action="store_true",
+        help="Generate debug artifacts.",
     )
     _ = parser.add_argument(
         "-p",
