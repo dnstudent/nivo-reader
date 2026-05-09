@@ -17,6 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, override
 
@@ -26,24 +27,47 @@ from cv2.typing import MatLike
 
 
 @dataclass
-class Preprocessing(JSONBaseDataclass, ABC):
+class Preprocessor(JSONBaseDataclass, ABC):
     name: str
 
     @abstractmethod
-    def __call__(self, image: MatLike) -> tuple[MatLike, dict[str, Any]]:
+    def __call__(
+        self, image: MatLike, configuration: Mapping[str, Any], **kwargs: Any
+    ) -> tuple[MatLike, dict[str, Any]]:
         pass
 
 
 @dataclass
-class PreprocessingPipeline(Preprocessing):
-    preprocessors: list[Preprocessing]
+class RotationPreprocessor(ABC):
+    name: str
+
+    @abstractmethod
+    def __call__(
+        self, image: MatLike, configuration: Mapping[str, Any], **kwargs: Any
+    ) -> tuple[float, dict[str, Any]]:
+        """Return a counter-clockwise rotation (in degrees) about the image center and a dictionary of informations.
+
+        Args:
+            image (MatLike): input image
+            configuration (Mapping[str, Any]): configuration of the preprocessor
+            **kwargs (Any): additional keyword arguments
+
+        Returns:
+            tuple[float, dict[str, Any]]: counter-clockwise rotation angle (degrees) and a dictionary of informations
+        """
+        pass
+
+
+@dataclass
+class PreprocessingPipeline(Preprocessor):
+    preprocessors: list[Preprocessor]
 
     @override
     def __call__(
-        self, image: MatLike, previous_work: dict[str, Any] | None = None
+        self, image: MatLike, configuration: Mapping[str, Any], **kwargs: Any
     ) -> tuple[MatLike, dict[str, Any]]:
-        infos = {}
+        infos: dict[str, Any] = {}
         for preprocessor in self.preprocessors:
-            image, info = preprocessor(image)
+            image, info = preprocessor(image, configuration, **kwargs)
             infos[preprocessor.name] = info
         return image, infos

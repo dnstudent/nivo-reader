@@ -20,38 +20,53 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from dataclasses import dataclass
 from typing import Any, final, override
 import logging
+from collections.abc import Mapping
 
 import cv2
 from cv2.typing import MatLike
-from fancy_dataclass import JSONDataclass
 from img2table.document.base.rotation import (
     get_connected_components,
     get_relevant_angles,
     estimate_skew,
+    rotate_img_with_border,
 )
 
-
-from .base import Preprocessing
+from .base import Preprocessor
 
 logger = logging.getLogger("nivo_reader.preprocessing.automatic_rotation")
 
 
 @final
 @dataclass
-class AutomaticRotation(Preprocessing, JSONDataclass):
-    name: str = "automatic_rotation"
+class Img2TableRotation(Preprocessor):
+    name: str = "img2table_rotation"
 
     # Code partly taken from img2table. Credit goes to the authors
     @override
     def __call__(
-        self, image: MatLike, previous_work: dict[str, Any] | None = None
+        self,
+        image: MatLike,
+        configuration: Mapping[str, Any],
+        previous_work: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> tuple[MatLike, dict[str, Any]]:
+        """Automatically rotate the image so that its lines are straight.
+
+        Args:
+            image (MatLike): input image
+            configuration (Mapping[str, Any]): configuration of the preprocessor. Ignored.
+            previous_work (dict[str, Any] | None, optional): previous work. If provided, the gray image will be taken from previous_work["_gray_image"]. Defaults to None.
+            **kwargs (Any): additional keyword arguments
+
+        Returns:
+            tuple[MatLike, dict[str, Any]]: rotated image and a dictionary of informations
+        """
         if image.ndim == 2:
-            gray = image.copy()
+            gray = image
         elif previous_work and "_gray_image" in previous_work:
             gray = previous_work["_gray_image"]
         else:
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         cc_centroids, ref_height, thresh = get_connected_components(img=gray)
 
@@ -66,13 +81,7 @@ class AutomaticRotation(Preprocessing, JSONDataclass):
         # Estimate skew
         skew_angle_degree = estimate_skew(angles=angles_degree, thresh=thresh)
 
-        # Compute affine transform. Takes angle in degrees.
-        affine_transform = cv2.getRotationMatrix2D(
-            center=(image.shape[1] / 2, image.shape[0] / 2),
-            angle=skew_angle_degree,
-            scale=1.0,
-        )
-        return affine_transform, {
+        return rotate_img_with_border(image, skew_angle_degree), {
             "rotated": True,
             "rotation_angle": skew_angle_degree,
         }

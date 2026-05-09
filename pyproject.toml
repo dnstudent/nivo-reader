@@ -39,6 +39,7 @@ dependencies = [
 Repository = "https://github.com/dnstudent/nivo-reader"
 
 [project.scripts]
+nivo-preprocess = "nivo_reader.scripts.preprocess:main"
 nivo-read = "nivo_reader.scripts.digitize:main"
 nivo-fix = "nivo_reader.scripts.fix_digitization:main"
 nivo-writer = "nivo_reader.scripts.write_excel:main"

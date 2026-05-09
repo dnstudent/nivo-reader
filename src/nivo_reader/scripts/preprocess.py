@@ -17,11 +17,14 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>."""
 
 import argparse
+from datetime import datetime
+import hashlib
 import logging
 import sys
 from pathlib import Path
+from typing import Any
+import cv2
 
-import numpy as np
 from cv2.typing import MatLike
 from pydantic import (
     BaseModel,
@@ -29,11 +32,41 @@ from pydantic import (
     FilePath,
     Field,
 )
+from sqlalchemy import JSON, String, create_engine, DateTime, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from tqdm import tqdm
 
-from nivo_reader.scripts.utils.paths import build_config_stack, mkopath
+# from nivo_reader.scripts.utils.paths import mkopath
 from nivo_reader.lib.images import read_matlike_image
-from nivo_reader.modules.preprocessing.automatic_rotation import AutomaticRotation
+from nivo_reader.modules.preprocessing.base import Preprocessor
+from nivo_reader.modules.preprocessing.automatic_rotation import Img2TableRotation
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def get_preprocessing_model(table_name: str):
+    class PreprocessingResult(Base):
+        __tablename__: str = table_name
+        __table_args__: dict[str, Any] = {"extend_existing": True}
+        scanSHA256: Mapped[str] = mapped_column(String, nullable=False)
+        runTag: Mapped[str] = mapped_column(String, primary_key=True)
+        scanName: Mapped[str] = mapped_column(String, primary_key=True)
+        infos: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+        created_at: Mapped[datetime] = mapped_column(
+            DateTime,
+            server_default=func.now(),  # Set once on insert
+            nullable=False,
+        )
+        updated_at: Mapped[datetime] = mapped_column(
+            DateTime,
+            server_default=func.now(),
+            onupdate=func.now(),  # Update on each change
+            nullable=False,
+        )
+
+    return PreprocessingResult
 
 
 class PipelineConfig(BaseModel):
@@ -41,7 +74,10 @@ class PipelineConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    db_uri: str
     output_dir: Path
+    table_name: str = "rotations"
+    run_tag: str
     project_dir: DirectoryPath
     debug_dir: Path | None = None
     image_formats: set[str] = {"png", "jpg", "jpeg", "gif"}
@@ -53,14 +89,24 @@ class AppConfig(BaseModel):
     logging_level: int
 
 
+def get_sha256(filepath: Path) -> str:
+    sha256_hash = hashlib.sha256(usedforsecurity=False)
+    with open(filepath, "rb") as f:
+        for byte_block in iter(lambda: f.read(8192), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+
 def preprocess(
     scan: MatLike,
+    preprocessor: Preprocessor,
     scan_config: PipelineConfig,
-    debug_dir: Path | None,
-) -> np.ndarray:
-    rotator = AutomaticRotation()
-    affine_transform, info = rotator(scan)
-    return affine_transform
+    _debug_dir: Path | None = None,
+) -> tuple[MatLike, dict[str, Any]]:
+    preprocessed_image, infos = preprocessor(
+        scan, scan_config.model_dump(mode="python")
+    )
+    return preprocessed_image, infos
 
 
 def setup_environment(args: argparse.Namespace):
@@ -77,9 +123,6 @@ def setup_environment(args: argparse.Namespace):
     if not script_config.input_path.is_file() and not script_config.input_path.is_dir():
         logging.error(f"Error: Input path {script_config.input_path} not valid")
         sys.exit(1)
-
-    output_dir = script_config.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     debug_dir = script_config.debug_dir
     if debug_dir:
@@ -101,73 +144,97 @@ def main():
     args = parser.parse_args()
     script_config = setup_environment(args)
 
-    def to_preprocess(path: Path) -> bool:
-        return (
-            path.is_file()
-            and (path.suffix.strip(".") in script_config.image_formats)
-            and (
-                script_config.overwrite
-                or not mkopath(
-                    path,
-                    script_config.output_dir,
-                    new_suffix=".npy",
-                ).exists()
-            )
+    engine = create_engine(script_config.db_uri)
+    PreprocessingResult = get_preprocessing_model(script_config.table_name)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    def is_valid_file(path: Path) -> bool:
+        return path.is_file() and (
+            path.suffix.strip(".") in script_config.image_formats
         )
 
-    iostack = map(
-        lambda entry: (
-            entry[0],
-            entry[1],
-            mkopath(entry[0], script_config.output_dir, new_suffix=".npy"),
-        ),
-        build_config_stack(
-            root=script_config.project_dir,
-            start=script_config.input_path,
-            model=PipelineConfig,
-            config_filename=script_config.pipeline_config_fname,
-        ),
+    iostack = (
+        (path, PipelineConfig()) for path in script_config.input_path.rglob("**/*")
     )
 
     scan_config_stack = sorted(
-        # Keep only entries that should be digitized (according to file format and overwrite rules)
         filter(
-            lambda entry: to_preprocess(entry[0]),
-            # Build the configuration tree
+            lambda entry: is_valid_file(entry[0]),
             iostack,
         ),
-        key=lambda x: x[2],
+        key=lambda x: x[0],
     )
 
+    preprocessor = Img2TableRotation()
+
     pbar = tqdm(scan_config_stack, desc="Processing scans")
-    for scan_path, scan_config, scan_output in pbar:
-        logging.debug(
-            f"Reading from {scan_path} to {scan_output} with conf {scan_config}"
-        )
-        if scan_config is None:
-            pbar.write(
-                f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: the configuration is invalid. Check the log."
-            )
-            continue
-        pbar.set_description(f"Processing {scan_path.name}")
-        scan_debug_dir = (
-            mkopath(scan_path, Path(script_config.debug_dir), mkdir=True)
-            if script_config.debug_dir
-            else None
-        )
-        try:
-            scan = read_matlike_image(scan_path)
-            affine_transform = preprocess(scan, scan_config, scan_debug_dir)
-            scan_output.parent.mkdir(parents=True, exist_ok=True)
-            np.save(scan_output, affine_transform)
-            pbar.write(
-                f"✓ Processed: {scan_path.relative_to(script_config.project_dir)}"
-            )
-        except Exception as e:
-            pbar.write(
-                f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: {e}"
-            )
-            logging.exception(f"Error processing {scan_path}: {e}")
+    with Session() as session:
+        for scan_path, scan_config in pbar:
+            logging.debug(f"Reading from {scan_path} with conf {scan_config}")
+            pbar.set_description(f"Processing {scan_path.name}")
+
+            try:
+                scan_sha256 = get_sha256(scan_path)
+
+                run_output_dir = script_config.output_dir / script_config.run_tag
+                run_output_dir.mkdir(parents=True, exist_ok=True)
+                output_filename = scan_path.name.replace(scan_path.suffix, ".png")
+                # Trick to get the file that may be inside a subdir
+                output_file = (
+                    list(run_output_dir.rglob(f"**/{output_filename}"))
+                    + [run_output_dir / output_filename]
+                )[0]
+
+                db_entry = (
+                    session.query(PreprocessingResult)
+                    .filter_by(runTag=script_config.run_tag, scanName=scan_path.name)
+                    .first()
+                )
+                fs_exists = output_file.exists()
+
+                # Inconsistency check
+                is_consistent = (db_entry is not None) == fs_exists
+                if is_consistent and db_entry and fs_exists:
+                    # Check if the scan itself has changed
+                    if db_entry.scanSHA256 != scan_sha256:
+                        is_consistent = False
+
+                if (
+                    not script_config.overwrite
+                    and is_consistent
+                    and db_entry
+                    and fs_exists
+                ):
+                    pbar.write(
+                        f"⏭ Skipped: {scan_path.relative_to(script_config.project_dir)} (already exists and consistent)"
+                    )
+                    continue
+
+                scan = read_matlike_image(scan_path, grayscale=False)
+                preprocessed_scan, infos = preprocess(scan, preprocessor, scan_config)
+
+                # Save preprocessed scan (lossless PNG)
+                _ = cv2.imwrite(str(output_file), preprocessed_scan)
+
+                result = PreprocessingResult(
+                    scanSHA256=scan_sha256,
+                    runTag=script_config.run_tag,
+                    scanName=scan_path.name,
+                    infos=infos,
+                )
+                _ = session.merge(result)
+                session.commit()
+
+                pbar.write(
+                    f"✓ Processed: {scan_path.relative_to(script_config.project_dir)}"
+                )
+            except Exception as e:
+                session.rollback()
+                pbar.write(
+                    f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: {e}"
+                )
+                logging.exception(f"Error processing {scan_path}: {e}")
 
 
 def create_argparser() -> argparse.ArgumentParser:
@@ -190,7 +257,25 @@ def create_argparser() -> argparse.ArgumentParser:
         "--output-dir",
         required=True,
         type=Path,
-        help="Output directory for preprocessed files",
+        help="Output directory for preprocessed images",
+    )
+    _ = parser.add_argument(
+        "--db-uri",
+        required=True,
+        type=str,
+        help="Database connection URI (e.g., sqlite:///preprocessing.db).",
+    )
+    _ = parser.add_argument(
+        "--table-name",
+        type=str,
+        default="rotations",
+        help="Name of the table to store the results.",
+    )
+    _ = parser.add_argument(
+        "--run-tag",
+        required=True,
+        type=str,
+        help="Tag assigned by the user to the preprocessing run.",
     )
     _ = parser.add_argument(
         "-d",
@@ -211,7 +296,7 @@ def create_argparser() -> argparse.ArgumentParser:
         "-w",
         "--overwrite",
         action="store_true",
-        help="Overwrite existing output files",
+        help="Overwrite existing output values in the DB",
     )
 
     # Image formats
