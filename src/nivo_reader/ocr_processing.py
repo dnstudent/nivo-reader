@@ -19,7 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 Parts of the code were inspired by MeteoSaver (https://github.com/VUB-HYDR/MeteoSaver). Credit goes to the authors."""
 
 import logging
-from itertools import pairwise, takewhile
+from itertools import pairwise
 from string import ascii_letters
 from typing import Any, Callable
 
@@ -31,23 +31,24 @@ import polars as pl
 import polars_distance as pld  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import pytesseract
 import tesserocr
-from cv2.typing import MatLike, Rect
+from cv2.typing import MatLike
 from numpy.typing import NDArray
 from PIL import Image
+
+from nivo_reader.lib.common import BoundingBox, RectShape
 
 from .configuration.table_and_cell_detection import (
     WordBlobsCreationConfiguration,
 )
-from .excel_output import draw_bounding_boxes
 from .image_processing import extract_contours_boxes
 from .roi_utilities import (
     autocrop_roi,
-    easyrect2rect,
+    easyrect2bbox,
     extract,
     generate_roi_grid,
     pad_roi,
     prepare_value_roi,
-    rect2easy,
+    bbox2easy,
 )
 from .table_detection import create_word_blobs
 
@@ -58,70 +59,41 @@ ALLOWED_LETTERS_TESSERACT = f"{ascii_letters}()\\'/áàóòúùèéìi"
 ALLOWED_NUMBERS = "_-0123456789?»"
 
 
-def filter_by_size(input_boxes: list[Rect], char_shape: tuple[int, int]) -> list[Rect]:
+def filter_by_size(
+    input_boxes: list[BoundingBox], char_shape: RectShape
+) -> list[BoundingBox]:
     """
     Filter boxes by minimum size.
 
     Parameters
     ----------
-    input_boxes : list[Rect]
+    input_boxes : list[BoundingBox]
         List of rectangles.
-    char_shape : tuple[int, int]
+    char_shape : RectShape
         (width, height) minimum size.
 
     Returns
     -------
-    list[Rect]
+    list[BoundingBox]
         Filtered boxes.
     """
     return list(
         filter(
-            lambda box: box[2] >= char_shape[0] and box[3] >= char_shape[1], input_boxes
+            lambda box: (
+                box.width >= char_shape.width and box.height >= char_shape.height
+            ),
+            input_boxes,
         )
     )
 
 
-def merge_boxes(boxes: list[Rect]) -> Rect | None:
-    """
-    Merge multiple boxes into bounding box.
-
-    Parameters
-    ----------
-    boxes : list[Rect]
-        List of rectangles.
-
-    Returns
-    -------
-    Rect | None
-        Merged rectangle or None if empty.
-    """
-    if len(boxes) == 0:
-        return None
-    ls = [box[0] for box in boxes]
-    us = [box[1] for box in boxes]
-    rs = [box[0] + box[2] for box in boxes]
-    ds = [box[1] + box[3] for box in boxes]
-    bounds = [min(ls), min(us), max(rs), max(ds)]
-    return [bounds[0], bounds[1], bounds[2] - bounds[0], bounds[3] - bounds[1]]
-
-
-def _sorted_boxes_are_vertically_close(
-    boxes: tuple[Rect, Rect], row_height: int
-) -> bool:
-    """boxes[0] is supposed to be above boxes[1]"""
-    # _, y1, _, h1 = boxes[0]
-    # y2 = boxes[1][1]
-    # TODO: explain 1.5 factor
-    return 0 <= box_y_center(boxes[1]) - box_y_center(boxes[0]) <= 1.5 * row_height
-
-
-def box_y_center(box: Rect):
+def box_y_center(box: BoundingBox):
     """
     Calculate the y-center of a box.
 
     Parameters
     ----------
-    box : Rect
+    box : BoundingBox
         Rectangle.
 
     Returns
@@ -129,10 +101,12 @@ def box_y_center(box: Rect):
     int
         Y-center coordinate.
     """
-    return int(box[1] + box[3] / 2)
+    return int(box.y + box.height / 2)
 
 
-def merge_same_line_boxes(boxes: list[Rect], line_height: int) -> list[Rect]:
+def merge_same_line_boxes(
+    boxes: list[BoundingBox], line_height: int
+) -> list[BoundingBox]:
     """Merge boxes that lie on the same line.
 
     Boxes are considered to be on the same line if their y-centers
@@ -149,14 +123,14 @@ def merge_same_line_boxes(boxes: list[Rect], line_height: int) -> list[Rect]:
         return []
 
     # Sort boxes by y-coordinate to process top-to-bottom
-    boxes = sorted(boxes, key=lambda b: b[1])
+    boxes = sorted(boxes, key=lambda b: b.y)
 
     # Group boxes by their y-centers (boxes within char_height/2 belong to same line)
-    merged_boxes: list[Rect] = []
+    merged_boxes: list[BoundingBox] = []
     # TODO: explain line height threshold
     threshold = line_height / 2
 
-    current_group: list[Rect] = [boxes[0]]
+    current_group: list[BoundingBox] = [boxes[0]]
     current_y_center = box_y_center(current_group[0])
 
     for box in boxes[1:]:
@@ -167,7 +141,7 @@ def merge_same_line_boxes(boxes: list[Rect], line_height: int) -> list[Rect]:
             current_group.append(box)
         else:
             # Merge the current group and start a new one
-            merged_box = merge_boxes(current_group)
+            merged_box = BoundingBox.merge(current_group)
             if merged_box:
                 merged_boxes.append(merged_box)
             current_group = [box]
@@ -175,17 +149,17 @@ def merge_same_line_boxes(boxes: list[Rect], line_height: int) -> list[Rect]:
 
     # Don't forget to merge the last group
     if current_group:
-        merged_box = merge_boxes(current_group)
+        merged_box = BoundingBox.merge(current_group)
         if merged_box:
             merged_boxes.append(merged_box)
 
     return merged_boxes
 
 
-def _pick_a_box(row: int, boxes: list[Rect]):
+def _pick_a_box(row: int, boxes: list[BoundingBox]) -> BoundingBox | None:
     available = list(
         filter(
-            lambda box: box[1] < row and row < box[1] + box[3],
+            lambda box: box.y < row and row < box.y + box.height,
             boxes,
         )
     )
@@ -193,26 +167,30 @@ def _pick_a_box(row: int, boxes: list[Rect]):
 
 
 def get_row_boxes(
-    rows: list[int], boxes: list[Rect], column_seps: tuple[int, int], char_height: int
+    rows: list[int],
+    boxes: list[BoundingBox],
+    column_seps: tuple[int, int],
+    char_height: int,
 ):
-    xleft = min([box[0] for box in boxes] or [column_seps[0]])
-    xright = max([box[0] + box[2] for box in boxes] or [column_seps[1]])
-    height = int(np.median([box[3] for box in boxes] or [char_height]))
+    xleft = min([box.x for box in boxes] or [column_seps[0]])
+    xright = max([box.x + box.width for box in boxes] or [column_seps[1]])
+    height = int(np.median([box.height for box in boxes] or [char_height]))
 
-    def default_box(row: int) -> Rect:
-        return [xleft, int(row - height / 2), xright - xleft, height]
+    def default_box(row: int) -> BoundingBox:
+        return BoundingBox(
+            x=xleft, y=int(row - height / 2), width=xright - xleft, height=height
+        )
 
     return [_pick_a_box(row, boxes) or default_box(row) for row in rows]
 
 
 def merge_and_filter_station_name_boxes(
-    input_boxes: list[Rect],
+    input_boxes: list[BoundingBox],
     rows_positions: list[int],
     char_height: int,
     column_seps: tuple[int, int],
     multi_rows: bool,
-    debug_img: MatLike | None = None,
-) -> list[Rect]:
+) -> list[BoundingBox]:
     """
     Merge boxes that are part of the same station name.
 
@@ -220,7 +198,7 @@ def merge_and_filter_station_name_boxes(
 
     Parameters
     ----------
-    input_boxes : list[Rect]
+    input_boxes : list[BoundingBox]
         List of station name and basin boxes. Each box lies within a single row of the table.
     rows_positions : list[int]
         Row center y-coordinates.
@@ -233,10 +211,10 @@ def merge_and_filter_station_name_boxes(
 
     Returns
     -------
-    list[Rect]
+    list[BoundingBox]
         Merged and filtered boxes.
     """
-    input_boxes = sorted(input_boxes, key=lambda b: b[1])
+    input_boxes = sorted(input_boxes, key=lambda b: b.y)
     rows_heights = list(map(lambda p: p[1] - p[0], pairwise(rows_positions)))
     if not rows_heights:
         rows_heights = [char_height]
@@ -244,16 +222,8 @@ def merge_and_filter_station_name_boxes(
     row_height = min(min(rows_heights), int(3 * char_height))
 
     horizontally_merged_boxes = sorted(
-        merge_same_line_boxes(input_boxes, row_height), key=lambda b: b[1]
+        merge_same_line_boxes(input_boxes, row_height), key=lambda b: b.y
     )
-
-    if debug_img is not None:
-        _ = draw_bounding_boxes(
-            debug_img,
-            horizontally_merged_boxes,
-            color=(255, 255, 0),
-            overwrite=True,
-        )
 
     rows_positions = sorted(rows_positions)
 
@@ -321,11 +291,10 @@ def merge_and_filter_station_name_boxes(
 # TODO: move to nivo-specific section
 def detect_station_boxes(
     column_image: MatLike,
-    char_shape: tuple[int, int],
+    char_shape: RectShape,
     rows_centers: list[int],
     multi_rows: bool,
-    debug_image: MatLike | None,
-) -> list[Rect]:
+) -> list[BoundingBox]:
     """
     Detect station name boxes in first column.
 
@@ -342,35 +311,34 @@ def detect_station_boxes(
 
     Returns
     -------
-    list[Rect]
+    list[BoundingBox]
         List of station box rectangles.
     """
     word_blobs = create_word_blobs(
         column_image,
-        WordBlobsCreationConfiguration(gap_kernel_shape=(char_shape[0] // 2, 1)),
+        WordBlobsCreationConfiguration(gap_kernel_shape=(char_shape.width // 2, 1)),
     )
-    word_boxes = list(extract_contours_boxes(word_blobs))
-    word_boxes.sort(key=lambda r: r[1])
+    word_boxes = extract_contours_boxes(word_blobs)
+    word_boxes.sort(key=lambda r: r.y)
     filtered_wboxes = filter_by_size(word_boxes, char_shape)
     # TODO: fix, this is horrible
     filtered_wboxes = merge_and_filter_station_name_boxes(
         filtered_wboxes,
         rows_centers,
-        char_shape[1],
+        char_shape.height,
         (0, column_image.shape[1]),
         multi_rows,
-        debug_image,
     )
     return filtered_wboxes
 
 
-def compute_name_rows(boxes: list[Rect]) -> list[int]:
+def compute_name_rows(boxes: list[BoundingBox]) -> list[int]:
     """
     Sort box indices by y-coordinate.
 
     Parameters
     ----------
-    boxes : list[Rect]
+    boxes : list[BoundingBox]
         List of rectangles.
 
     Returns
@@ -378,7 +346,7 @@ def compute_name_rows(boxes: list[Rect]) -> list[int]:
     list[int]
         Sorted indices.
     """
-    ys = [b[1] for b in boxes]
+    ys = [b.y for b in boxes]
     return np.argsort(ys).tolist()
 
 
@@ -426,7 +394,7 @@ def merge_easypolys(polys: list[list[list[int]]] | NDArray[np.int_]) -> list[int
 
 def process_easyocr_readtext_result(
     cell_results: list[dict[str, Any]],
-) -> dict[str, Any]:
+) -> dict[str, BoundingBox | str | float | None]:
     """
     Process easyocr readtext results for a single cell.
 
@@ -441,7 +409,7 @@ def process_easyocr_readtext_result(
         Processed result with boxes, text, confidence.
     """
     return {
-        "boxes": easyrect2rect(
+        "boxes": easyrect2bbox(
             merge_easypolys([result["boxes"] for result in cell_results])
         )
         if cell_results
@@ -454,8 +422,8 @@ def process_easyocr_readtext_result(
 
 
 def process_easyocr_recognize_result(
-    box_results: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    box_results: list[dict[str, BoundingBox | str | float]],
+) -> list[dict[str, BoundingBox | str | float | None]]:
     """
     Process easyocr recognize results.
 
@@ -488,8 +456,8 @@ def easyocr_names_reader(ocr: easyocr.Reader):
     """
 
     def _reader(
-        image: MatLike, rois: list[Rect]
-    ) -> tuple[list[str | None], list[float | None], list[Rect]]:
+        image: MatLike, rois: list[BoundingBox]
+    ) -> tuple[list[str | None], list[float | None], list[BoundingBox]]:
         recognition_results = transpose_recognition_results(
             [
                 process_easyocr_readtext_result(
@@ -504,7 +472,14 @@ def easyocr_names_reader(ocr: easyocr.Reader):
             ]
         )
         recognition_results["boxes"] = [
-            [box[0] + roi[0], box[1] + roi[1], box[2], box[3]] if box else roi
+            BoundingBox(
+                x=box.x + roi.x,
+                y=box.y + roi.y,
+                width=box.width,
+                height=box.height,
+            )
+            if box
+            else roi
             for box, roi in zip(recognition_results["boxes"], rois)
         ]
         return (
@@ -532,9 +507,9 @@ def easyocr_values_reader(ocr: easyocr.Reader):
     """
 
     def _reader(
-        image: MatLike, rois: list[Rect]
-    ) -> tuple[list[str | None], list[float | None], list[Rect]]:
-        easyrois = list(map(rect2easy, rois))
+        image: MatLike, rois: list[BoundingBox]
+    ) -> tuple[list[str | None], list[float | None], list[BoundingBox]]:
+        easyrois = list(map(bbox2easy, rois))
         recognition_results = transpose_recognition_results(
             process_easyocr_recognize_result(
                 ocr.recognize(  # type: ignore  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
@@ -559,8 +534,8 @@ def easyocr_values_reader(ocr: easyocr.Reader):
 
 def paddleocr_values_reader(ocr: paddleocr.TextRecognition):
     def _reader(
-        image: MatLike, rois: list[Rect]
-    ) -> tuple[list[str | None], list[float | None], list[Rect]]:
+        image: MatLike, rois: list[BoundingBox]
+    ) -> tuple[list[str | None], list[float | None], list[BoundingBox]]:
         if image.ndim == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
         crops = list(
@@ -586,7 +561,9 @@ def paddleocr_names_reader(ocr: paddleocr.TextRecognition):
     return paddleocr_values_reader(ocr)
 
 
-def process_tesseract_cell_result(result: dict[str, Any], roi: Rect) -> dict[str, Any]:
+def process_tesseract_cell_result(
+    result: dict[str, Any], roi: BoundingBox
+) -> dict[str, Any]:
     """
     Process Tesseract result for a single cell.
 
@@ -594,7 +571,7 @@ def process_tesseract_cell_result(result: dict[str, Any], roi: Rect) -> dict[str
     ----------
     result : dict[str, Any]
         Tesseract result dict.
-    roi : Rect
+    roi : BoundingBox
         ROI of the cell.
 
     Returns
@@ -614,12 +591,12 @@ def process_tesseract_cell_result(result: dict[str, Any], roi: Rect) -> dict[str
 
     if len(result["left"]) > 0:
         i = min(len(result["left"]), 2) - 1
-        boxes = [
-            roi[0] + result["left"][i],
-            roi[1] + result["top"][i],
-            result["width"][i],
-            result["height"][i],
-        ]
+        boxes = BoundingBox(
+            x=roi.x + result["left"][i],
+            y=roi.y + result["top"][i],
+            width=result["width"][i],
+            height=result["height"][i],
+        )
     else:
         boxes = None
     return {"boxes": boxes, "confident": confident, "text": text}
@@ -640,9 +617,13 @@ def tesseract_values_reader(_: None):
         Reader function.
     """
 
-    def _reader(image: MatLike, rois: list[Rect]):
+    def _reader(
+        image: MatLike, rois: list[BoundingBox]
+    ) -> tuple[list[str | None], list[float | None], list[BoundingBox]]:
         crops = list(map(lambda roi: extract(image, roi), rois))
-        recognition_results: tuple[list[str | None], list[float | None], list[Rect]] = (
+        recognition_results: tuple[
+            list[str | None], list[float | None], list[BoundingBox]
+        ] = (
             [],
             [],
             [],
@@ -669,9 +650,11 @@ def tesseract_values_reader(_: None):
 
 
 def tesseract_names_reader(_: None):
-    def _reader(image: MatLike, rois: list[Rect]):
+    def _reader(image: MatLike, rois: list[BoundingBox]):
         crops = list(map(lambda roi: extract(image, roi), rois))
-        recognition_results: tuple[list[str | None], list[float | None], list[Rect]] = (
+        recognition_results: tuple[
+            list[str | None], list[float | None], list[BoundingBox]
+        ] = (
             [],
             [],
             [],
@@ -698,15 +681,15 @@ def tesseract_names_reader(_: None):
 
 
 def tesserocr_values_reader(api: tesserocr.PyTessBaseAPI):
-    def _reader(image: MatLike, rois: list[Rect]):
+    def _reader(image: MatLike, rois: list[BoundingBox]):
         logger.info("Loading a new image into tesserocr")
         api.Clear()
-        api.SetImage(Image.fromarray(image))
+        api.SetImage(Image.fromarray(image))  # pyright: ignore[reportUnknownMemberType]
         texts: list[str | None] = []
         confidences: list[float | None] = []
-        boxes: list[Rect] = []
+        boxes: list[BoundingBox] = []
         for roi in rois:
-            api.SetRectangle(roi[0], roi[1], roi[2], roi[3])
+            api.SetRectangle(roi.x, roi.y, roi.width, roi.height)
             texts.append(api.GetUTF8Text().strip())
             confidences.append(api.MeanTextConf() / 100)
             boxes.append(roi)
@@ -724,17 +707,16 @@ def read_station_names(
     image: MatLike,
     rows_centers: list[int],
     column_separators: list[int],
-    char_shape: tuple[int, int],
+    char_shape: RectShape,
     multi_rows: bool,
     readers: dict[
         str,
         Callable[
-            [MatLike, list[Rect]],
-            tuple[list[str | None], list[float | None], list[Rect]],
+            [MatLike, list[BoundingBox]],
+            tuple[list[str | None], list[float | None], list[BoundingBox]],
         ],
     ],
     roi_padding: int,
-    debug_image: MatLike | None,
 ) -> pl.DataFrame:
     """
     Read station names from the first column of the table.
@@ -747,11 +729,11 @@ def read_station_names(
         The y-coordinates of the centers of the rows.
     column_separators : list[int]
         The x-coordinates of the column separators.
-    char_shape : tuple[int, int]
+    char_shape : RectShape
         The approximate shape (width, height) of a character.
     multi_rows : bool
         Whether station names can span multiple rows.
-    readers : dict[str, Callable[[MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]]]
+    readers : dict[str, Callable[[MatLike, list[BoundingBox]], tuple[list[str | None], list[float | None], list[BoundingBox]]]]
         A dict of tagged callables that takes an image and a list of ROIs and returns the recognized text, confidences, and bounding boxes.
     roi_padding : int
         The amount of padding to add around each ROI.
@@ -770,13 +752,11 @@ def read_station_names(
     names_wboxes = list(
         map(
             lambda box: pad_roi(autocrop_roi(box, image), roi_padding),
-            detect_station_boxes(
-                first_column, char_shape, rows_centers, multi_rows, debug_image
-            ),
+            detect_station_boxes(first_column, char_shape, rows_centers, multi_rows),
         )
     )
 
-    names_wboxes = sorted(names_wboxes, key=lambda b: b[1])
+    names_wboxes = sorted(names_wboxes, key=lambda b: b.y)
     results: dict[str, pl.DataFrame] = {}
     for reader_tag, reader in readers.items():
         ocr_names, names_confidences, ocr_name_boxes = reader(image, names_wboxes)
@@ -786,7 +766,9 @@ def read_station_names(
         names_confidences: list[float | None] = np.array(names_confidences)[
             names_rows
         ].tolist()
-        ocr_name_boxes: list[Rect] = np.array(ocr_name_boxes)[names_rows].tolist()
+        ocr_name_boxes: list[BoundingBox] = np.array(ocr_name_boxes)[
+            names_rows
+        ].tolist()
 
         results[reader_tag] = pl.DataFrame(
             [
@@ -820,25 +802,26 @@ def read_station_names(
 
 
 def populate_with_reading_results(
-    results: tuple[list[str | None], list[float | None], list[Rect]],
+    results: tuple[list[str | None], list[float | None], list[BoundingBox]],
     reader: Callable[
-        [MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]
+        [MatLike, list[BoundingBox]],
+        tuple[list[str | None], list[float | None], list[BoundingBox]],
     ],
     image: MatLike,
-    rois: list[Rect],
+    rois: list[BoundingBox],
 ) -> None:
     """
     Fill the results tuple with OCR readings, only when the confidence is above the threshold.
 
     Parameters
     ----------
-    results : tuple[list[str | None], list[float | None], list[Rect]]
+    results : tuple[list[str | None], list[float | None], list[BoundingBox]]
         The results tuple to populate (readings, confidences, boxes).
-    reader : Callable[[MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]]
+    reader : Callable[[MatLike, list[BoundingBox]], tuple[list[str | None], list[float | None], list[BoundingBox]]]
         The OCR reader callable.
     image : MatLike
         The image to process.
-    rois : list[Rect]
+    rois : list[BoundingBox]
         The list of ROIs to read.
 
     Notes
@@ -848,7 +831,7 @@ def populate_with_reading_results(
     """
     # Filter ROIs that don't already have satisfying results
     # Keep track of original indices to map results back correctly
-    filtered_rois: list[Rect] = []
+    filtered_rois: list[BoundingBox] = []
     original_indices: list[int] = []
 
     for i, roi in enumerate(rois):
@@ -881,12 +864,12 @@ def read_values(
     image: MatLike,
     rows_centers: list[int],
     column_separators: list[int],
-    number_char_shape: tuple[int, int],
+    number_char_shape: RectShape,
     readers: dict[
         str,
         Callable[
-            [MatLike, list[Rect]],
-            tuple[list[str | None], list[float | None], list[Rect]],
+            [MatLike, list[BoundingBox]],
+            tuple[list[str | None], list[float | None], list[BoundingBox]],
         ],
     ],
     roi_padding: int,
@@ -903,9 +886,9 @@ def read_values(
         The y-coordinates of the centers of the rows.
     column_separators : list[int]
         The x-coordinates of the column separators.
-    number_char_shape : tuple[int, int]
+    number_char_shape : RectShape
         The approximate shape (width, height) of a number character.
-    readers : list[Callable[[MatLike, list[Rect]], tuple[list[str | None], list[float | None], list[Rect]]]]
+    readers : list[Callable[[MatLike, list[BoundingBox]], tuple[list[str | None], list[float | None], list[BoundingBox]]]]
         A list of OCR reader callables to attempt in order.
     roi_padding : int
         The amount of padding to add around each ROI.
@@ -918,7 +901,7 @@ def read_values(
         A DataFrame with columns "content", "confidence", and "bounding_box" containing the recognized values, confidences, and bounding boxes.
     """
     rois_grid = generate_roi_grid(
-        rows_centers, column_separators[1:], number_char_shape[1], extra_width
+        rows_centers, column_separators[1:], number_char_shape.height, extra_width
     )
     n_rows = len(rows_centers)
     n_cols = len(column_separators) - 2
@@ -943,7 +926,7 @@ def read_values(
 
     results: dict[str, pl.DataFrame] = {}
     for reader_tag, reader in readers.items():
-        results_flat: tuple[list[str | None], list[float | None], list[Rect]] = (
+        results_flat: tuple[list[str | None], list[float | None], list[BoundingBox]] = (
             [None] * len(rois_flat),
             [None] * len(rois_flat),
             rois_flat,

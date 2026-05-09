@@ -33,6 +33,7 @@ from .configuration.table_and_cell_detection import (
     WordBlobsCreationConfiguration,
 )
 from .image_processing import combine_lines, detect_lines, ms_threshold
+from nivo_reader.lib.common import RectShape, ClipSizes, BoundingBox
 
 
 def ok_side(x: int, expected_x: int, tol: float) -> bool:
@@ -102,7 +103,7 @@ def try_detect_table_rect(
 
 
 def cut_out_tables(
-    image: MatLike, table_rect: Rect, clip_specs: tuple[int, int, int, int]
+    image: MatLike, table_rect: BoundingBox, clips: ClipSizes
 ) -> tuple[MatLike, MatLike]:
     """
     Cut out table region from image with optional clipping.
@@ -113,18 +114,17 @@ def cut_out_tables(
         Input image.
     table_rect : Rect
         Rectangle defining table bounds.
-    clip_specs : tuple[int, int, int, int]
-        (up, down, left, right) pixels to clip from table.
+    clips : ClipSizes
+        Pixels to clip from an image.
 
     Returns
     -------
     tuple[MatLike, MatLike]
         Tuple of (full_table, clipped_table).
     """
-    clip_up, clip_down, clip_left, clip_right = clip_specs
-    x, y, w, h = table_rect
+    x, y, w, h = table_rect.x, table_rect.y, table_rect.width, table_rect.height
     return image[y : y + h, x : x + w], image[
-        y + clip_up : y + h - clip_down, x + clip_left : x + w - clip_right
+        y + clips.top : y + h - clips.bottom, x + clips.left : x + w - clips.right
     ]
 
 
@@ -276,7 +276,7 @@ def detect_column_separators(table_img: MatLike, char_width: int) -> list[int]:
 def detect_rows_positions(
     binarized_table_wo_lines: MatLike,
     nchars_threshold: int,
-    number_char_shape: tuple[int, int],
+    number_char_shape: RectShape,
 ) -> np.ndarray:
     """
     Detect horizontal row positions.
@@ -287,7 +287,7 @@ def detect_rows_positions(
         Binary image without lines.
     nchars_threshold : int
         Minimum number of characters for peak detection.
-    number_char_shape : tuple[int, int]
+    number_char_shape : RectShape
         (width, height) of character.
 
     Returns
@@ -296,10 +296,10 @@ def detect_rows_positions(
         Array of row y-coordinates.
     """
     is_white = binarized_table_wo_lines / 255
-    n_chars = is_white.sum(axis=1) / number_char_shape[0]
+    n_chars = is_white.sum(axis=1) / number_char_shape.width
     rows_centers, _ = find_peaks(
         n_chars,
         height=nchars_threshold,
-        distance=number_char_shape[1] * 0.8,  # TODO: explain 0.8 factor
+        distance=number_char_shape.height * 0.8,  # TODO: explain 0.8 factor
     )
     return rows_centers

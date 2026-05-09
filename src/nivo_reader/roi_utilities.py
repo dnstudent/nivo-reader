@@ -29,6 +29,7 @@ from sklearn.cluster import KMeans
 
 from .configuration.table_and_cell_detection import WordBlobsCreationConfiguration
 from .table_detection import create_word_blobs
+from .lib.common import BoundingBox, RectShape
 
 
 def generate_roi(
@@ -36,7 +37,7 @@ def generate_roi(
     column_separators: tuple[int, int],
     char_height: int,
     extra_width: int,
-) -> Rect:
+) -> BoundingBox:
     """
     Generate ROI for a single cell.
 
@@ -53,17 +54,17 @@ def generate_roi(
 
     Returns
     -------
-    Rect
-        Rectangle (x, y, width, height).
+    BoundingBox
+        Bounding box (x, y, width, height).
     """
     row_height = ceil(int(1.5 * char_height))
     column_width = (column_separators[1] - column_separators[0]) + extra_width
-    return [
-        column_separators[0] - extra_width // 2,
-        row_position - int(floor(row_height / 2)),
-        column_width,
-        row_height,
-    ]
+    return BoundingBox(
+        x=column_separators[0] - extra_width // 2,
+        y=row_position - int(floor(row_height / 2)),
+        width=column_width,
+        height=row_height,
+    )
 
 
 def generate_roi_grid(
@@ -71,7 +72,7 @@ def generate_roi_grid(
     column_separators: list[int],
     char_height: int,
     extra_width: int,
-) -> list[list[Rect]]:
+) -> list[list[BoundingBox]]:
     """
     Generate grid of ROIs for all cells.
 
@@ -88,7 +89,7 @@ def generate_roi_grid(
 
     Returns
     -------
-    list[list[Rect]]
+    list[list[BoundingBox]]
         2D list of rectangles [columns][rows].
     """
     row_positions = sorted(row_positions)
@@ -259,7 +260,7 @@ def autocrop_axis(a: NDArray[Any], axis: int) -> tuple[int, int]:
     return 0, a.shape[1 - axis]
 
 
-def autocrop_roi(roi: Rect, image: MatLike) -> Rect:
+def autocrop_roi(roi: BoundingBox, image: MatLike) -> BoundingBox:
     """
     Autocrop a region of interest within an image.
 
@@ -279,10 +280,15 @@ def autocrop_roi(roi: Rect, image: MatLike) -> Rect:
     is_fg = image > 0
     x_from, x_to = autocrop_axis(is_fg, axis=0)
     y_from, y_to = autocrop_axis(is_fg, axis=1)
-    return [roi[0] + x_from, roi[1] + y_from, x_to - x_from, y_to - y_from]
+    return BoundingBox(
+        x=roi.x + x_from,
+        y=roi.y + y_from,
+        width=x_to - x_from,
+        height=y_to - y_from,
+    )
 
 
-def pad_roi(roi: Rect, padding: int | tuple[int, int]) -> Rect:
+def pad_roi(roi: BoundingBox, padding: int | tuple[int, int]) -> BoundingBox:
     """
     Add padding to region of interest.
 
@@ -302,39 +308,34 @@ def pad_roi(roi: Rect, padding: int | tuple[int, int]) -> Rect:
         pad_x, pad_y = padding, padding
     else:
         pad_x, pad_y = padding
-    x, y, w, h = roi
-
-    padded_x1 = max(x - pad_x, 0)
-    padded_y1 = max(y - pad_y, 0)
-    return [
-        padded_x1,
-        padded_y1,
-        w + 2 * pad_x,
-        h + 2 * pad_y,
-    ]
+    return BoundingBox(
+        x=max(roi.x - pad_x, 0),
+        y=max(roi.y - pad_y, 0),
+        width=roi.width + 2 * pad_x,
+        height=roi.height + 2 * pad_y,
+    )
 
 
-def rect2easy(rect: Rect) -> list[int]:
+def bbox2easy(bbox: BoundingBox) -> list[int]:
     """
-    Convert OpenCV rect to easyocr format [x1, x2, y1, y2].
+    Convert BoundingBox to easyocr format [x1, x2, y1, y2].
 
     Parameters
     ----------
-    rect : Rect
-        OpenCV rectangle (x, y, w, h).
+    bbox : BoundingBox
+        Bounding box.
 
     Returns
     -------
     list[int]
         Easyocr rectangle format.
     """
-    x, y, w, h = rect
-    return [x, x + w, y, y + h]
+    return [bbox.x, bbox.x + bbox.width, bbox.y, bbox.y + bbox.height]
 
 
-def easyrect2rect(eo_rect: list[int]) -> Rect:
+def easyrect2bbox(eo_rect: list[int]) -> BoundingBox:
     """
-    Convert easyocr format to OpenCV rect.
+    Convert easyocr format to BoundingBox.
 
     Parameters
     ----------
@@ -343,18 +344,18 @@ def easyrect2rect(eo_rect: list[int]) -> Rect:
 
     Returns
     -------
-    Rect
-        OpenCV rectangle (x, y, w, h).
+    BoundingBox
+        Bounding box.
     """
     x1, x2, y1, y2 = eo_rect
-    return [x1, y1, x2 - x1, y2 - y1]
+    return BoundingBox(x=x1, y=y1, width=x2 - x1, height=y2 - y1)
 
 
 def resize_roi_to_largest_connected_region(
-    roi: Rect,
+    roi: BoundingBox,
     binarized_image: MatLike,
     word_blobs_configuration: WordBlobsCreationConfiguration,
-) -> Rect | None:
+) -> BoundingBox | None:
     """
     Resize ROI to the largest connected region of foreground pixels.
 
@@ -365,7 +366,7 @@ def resize_roi_to_largest_connected_region(
 
     Parameters
     ----------
-    roi : Rect
+    roi : BoundingBox
         Region of interest (x, y, width, height).
     binarized_image : MatLike
         Binary image with white (255) foreground and black (0) background.
@@ -374,8 +375,8 @@ def resize_roi_to_largest_connected_region(
 
     Returns
     -------
-    Rect | None
-        New ROI bounding the largest connected region, or None if no foreground found.
+    BoundingBox | None
+        New BoundingBox bounding the largest connected region, or None if no foreground found.
     """
     # Extract the ROI region from the image
     roi_image = extract(binarized_image, roi)
@@ -406,13 +407,13 @@ def resize_roi_to_largest_connected_region(
     h_rel = stats[largest_component_idx, cv2.CC_STAT_HEIGHT]
 
     # Convert to absolute coordinates
-    x_abs = roi[0] + x_rel
-    y_abs = roi[1] + y_rel
+    x_abs = roi.x + x_rel
+    y_abs = roi.y + y_rel
 
-    return [int(x_abs), int(y_abs), int(w_rel), int(h_rel)]
+    return BoundingBox(x=int(x_abs), y=int(y_abs), width=int(w_rel), height=int(h_rel))
 
 
-def expand_roi_atleast(roi: Rect, atleast: tuple[int, int]) -> Rect:
+def expand_roi_atleast(roi: BoundingBox, atleast: RectShape) -> BoundingBox:
     """
     Expand ROI to be at least expected size.
 
@@ -420,22 +421,21 @@ def expand_roi_atleast(roi: Rect, atleast: tuple[int, int]) -> Rect:
     ----------
     roi : Rect
         Input rectangle (x, y, w, h).
-    atleast : tuple[int, int]
-        Minimum (width, height).
+    atleast : RectShape
+        Minimum width and height.
 
     Returns
     -------
     Rect
         Expanded rectangle.
     """
-    _, _, w, h = roi
-    exp_w, exp_h = atleast
-    pad_x = int(ceil(max((exp_w - w) / 2, 0)))
-    pad_y = int(ceil(max((exp_h - h) / 2, 0)))
+    exp_w, exp_h = atleast.width, atleast.height
+    pad_x = int(ceil(max((exp_w - roi.width) / 2, 0)))
+    pad_y = int(ceil(max((exp_h - roi.height) / 2, 0)))
     return pad_roi(roi, (pad_x, pad_y))
 
 
-def extract(image: MatLike, rect: Rect) -> MatLike:
+def extract(image: MatLike, rect: BoundingBox) -> MatLike:
     """
     Extract rectangular region from image.
 
@@ -451,18 +451,17 @@ def extract(image: MatLike, rect: Rect) -> MatLike:
     MatLike
         Extracted region.
     """
-    x, y, w, h = rect
     return image[
-        max(y, 0) : min(y + h, image.shape[0]),
-        max(x, 0) : min(x + w, image.shape[1]),
+        max(rect.y, 0) : min(rect.y + rect.height, image.shape[0]),
+        max(rect.x, 0) : min(rect.x + rect.width, image.shape[1]),
     ]
     # return image[y : y + h, x : x + w]
 
 
 def prepare_value_roi(
-    roi: Rect,
+    roi: BoundingBox,
     image: MatLike,
-    character_shape: tuple[int, int],
+    character_shape: RectShape,
     configuration: WordBlobsCreationConfiguration,
     padding: int,
 ):

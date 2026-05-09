@@ -23,13 +23,15 @@ from typing import Literal
 
 import cv2
 import numpy as np
-from cv2.typing import MatLike, Rect
+from cv2.typing import MatLike
 from img2table.document.base.rotation import (
     estimate_skew,
     fix_rotation_image,
     get_connected_components,
     get_relevant_angles,
 )
+
+from nivo_reader.lib.common import BoundingBox
 
 from .configuration.preprocessing import (
     AngleDetectionConfiguration,
@@ -177,14 +179,18 @@ def nivo_lines_angle(
     vertical_boxes = list(
         filter(
             lambda box: (
-                box[2] > 0 and box[3] / box[2] > configuration.line_ratio_threshold
+                box.width > 0
+                and box.height / box.width > configuration.line_ratio_threshold
             ),
             extract_contours_boxes(vertical_lines),
         )
     )
 
     # Compute the angle of each line as the arctangent of the height-to-width ratio
-    angles = [np.arctan(h / w) if w > 1 else np.pi / 2 for _, _, w, h in vertical_boxes]
+    angles = [
+        np.arctan(box.height / box.width) if box.width > 1 else np.pi / 2
+        for box in vertical_boxes
+    ]
 
     if angles:
         return float(np.degrees(np.median(angles)))
@@ -450,7 +456,7 @@ def preprocess(
     )
 
 
-def extract_contours_boxes(image: MatLike) -> list[Rect]:
+def extract_contours_boxes(image: MatLike) -> list[BoundingBox]:
     """
     Extract bounding boxes from contours in the image.
 
@@ -461,12 +467,12 @@ def extract_contours_boxes(image: MatLike) -> list[Rect]:
 
     Returns
     -------
-    list[Rect]
-        List of bounding rectangles.
+    list[BoundingBox]
+        List of bounding boxes.
     """
     contours = cv2.findContours(image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[0]
     return [
-        cv2.boundingRect(contour)
+        BoundingBox.from_rect(cv2.boundingRect(contour))
         for contour in contours
         if cv2.contourArea(contour) > 4
     ]
