@@ -40,7 +40,7 @@ from tqdm import tqdm
 
 from nivo_reader.nivo_reader import read_nivo_table
 from nivo_reader.scripts.utils.paths import build_config_stack, mkopath
-
+from nivo_reader.lib.images import read_matlike_image
 
 # Suppress pin_memory warnings from PyTorch/EasyOCR
 warnings.filterwarnings("ignore", message=".*pin_memory.*")
@@ -121,25 +121,6 @@ def get_ocrs(ocr_engines: set[str]):
                 )
                 ocrs["tesserocr"] = _OCR_CACHE["tesserocr"]
     return ocrs
-
-
-def load_image(image_path: Path) -> np.ndarray:
-    """Load image from file and convert to BGR.
-
-    Args:
-        image_path: Path to image file
-
-    Returns:
-        Image in BGR format
-
-    Raises:
-        ValueError: If image cannot be loaded
-    """
-    try:
-        # Reverse the RGB channels to get BGR for OpenCV
-        return np.array(Image.open(image_path).convert("RGB"))[:, :, ::-1].copy()
-    except Exception as e:
-        raise ValueError(f"Could not load image {image_path}: {e}")
 
 
 def digitize(
@@ -294,7 +275,7 @@ def main():
             else None
         )
         try:
-            scan = load_image(scan_path)
+            scan = read_matlike_image(scan_path)
             df = digitize(scan, scan_config, ocrs, scan_debug_dir)
             scan_output.parent.mkdir(parents=True, exist_ok=True)
             df.write_ipc(scan_output, compression="zstd")
