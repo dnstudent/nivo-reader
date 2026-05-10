@@ -79,7 +79,7 @@ class PreprocessingRun(Base):
 
     project: Mapped["Project"] = relationship(back_populates="preprocessing_runs")
     preprocessed_scans: Mapped[list["PreprocessedScan"]] = relationship(
-        back_populates="run"
+        back_populates="run", cascade="all, delete, delete-orphan"
     )
 
 
@@ -139,7 +139,7 @@ class StructureRun(Base):
 
     project: Mapped["Project"] = relationship(back_populates="structure_runs")
     table_structures: Mapped[list["TableStructure"]] = relationship(
-        back_populates="run"
+        back_populates="run", cascade="all, delete, delete-orphan"
     )
 
 
@@ -184,7 +184,7 @@ class TableStructure(Base):
     )
     run: Mapped["StructureRun"] = relationship(back_populates="table_structures")
     cell_structures: Mapped[list["CellStructure"]] = relationship(
-        back_populates="table"
+        back_populates="table", cascade="all, delete, delete-orphan"
     )
 
 
@@ -201,6 +201,11 @@ class CellStructure(Base):
         JSON,
         nullable=False,
         doc="Configuration used by the cell structure detection pipeline",
+    )
+    bbox: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        doc="Bounding box of the cell within the preprocessed scan",
     )
     row: Mapped[int] = mapped_column(nullable=False, doc="Row index of the cell")
     col: Mapped[int] = mapped_column(nullable=False, doc="Column index of the cell")

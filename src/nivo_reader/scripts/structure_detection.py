@@ -17,22 +17,15 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>."""
 
 import argparse
-from datetime import datetime
 import logging
-import hashlib
 import sys
 from pathlib import Path
-from typing import Any
 
 import cv2
 from cv2.typing import MatLike
-from pydantic import (
-    BaseModel,
-    DirectoryPath,
-    FilePath,
-)
-from sqlalchemy import String, create_engine, DateTime, func, Integer, JSON, ForeignKey
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from pydantic import BaseModel, DirectoryPath, FilePath, ValidationError
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 from tqdm import tqdm
 
 from nivo_reader.lib.images import read_matlike_image
@@ -44,78 +37,29 @@ from nivo_reader.modules.structure_detection.nivo_structure_detection import (
     NivoStructureDetection,
     NivoStructureDetectionConfig as PipelineConfig,
 )
-from nivo_reader.scripts.utils.paths import build_config_stack
+from nivo_reader.models.db import (
+    Base,
+    Project,
+    StructureRun,
+    PreprocessedScan,
+    TableStructure,
+    CellStructure,
+)
+from nivo_reader.scripts.utils.paths import build_config_dict, find_nested_files
 
 
 STEP_NUMBER = "02"
 STEP_NAME = "table_structure"
 
 
-class Base(DeclarativeBase):
-    pass
-
-
-def get_structure_models(prefix: str = ""):
-    class StructureTable(Base):
-        __tablename__: str = f"{prefix}table" if prefix else "table"
-        __table_args__: dict[str, Any] = {"extend_existing": True}
-        id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-        preprocessingRunTag: Mapped[str] = mapped_column(String, nullable=False)
-        structureRunTag: Mapped[str] = mapped_column(String, nullable=False)
-        scanName: Mapped[str] = mapped_column(String, nullable=False)
-        scanChecksum: Mapped[str] = mapped_column(String, nullable=False)
-        bbox: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False)
-        header: Mapped[dict[str, int] | None] = mapped_column(JSON, nullable=True)
-        index: Mapped[dict[str, int] | None] = mapped_column(JSON, nullable=True)
-        content: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False)
-        num_rows: Mapped[int] = mapped_column(Integer, nullable=False)
-        num_cols: Mapped[int] = mapped_column(Integer, nullable=False)
-        created_at: Mapped[datetime] = mapped_column(
-            DateTime,
-            server_default=func.now(),  # Set once on insert
-            nullable=False,
-        )
-        updated_at: Mapped[datetime] = mapped_column(
-            DateTime,
-            server_default=func.now(),
-            onupdate=func.now(),  # Update on each change
-            nullable=False,
-        )
-
-    class StructureCell(Base):
-        __tablename__: str = f"{prefix}cell" if prefix else "cell"
-        __table_args__: dict[str, Any] = {"extend_existing": True}
-        table_id: Mapped[int] = mapped_column(
-            Integer, ForeignKey(f"{prefix}table.id"), primary_key=True
-        )
-        row: Mapped[int] = mapped_column(Integer, primary_key=True)
-        column: Mapped[int] = mapped_column(Integer, primary_key=True)
-        cell_region: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False)
-        created_at: Mapped[datetime] = mapped_column(
-            DateTime,
-            server_default=func.now(),  # Set once on insert
-            nullable=False,
-        )
-        updated_at: Mapped[datetime] = mapped_column(
-            DateTime,
-            server_default=func.now(),
-            onupdate=func.now(),  # Update on each change
-            nullable=False,
-        )
-
-    return StructureTable, StructureCell
-
-
 class AppConfig(BaseModel):
     db_uri: str
-    table_prefix: str = "structure_"
+    project_name: str
     preprocessing_run_tag: str
     structure_run_tag: str
     project_dir: DirectoryPath
     debug_dir: Path | None = None
-    image_formats: set[str] = {"png"}
     overwrite: bool = False
-    pipeline_config_fname: str = "config.toml"
     input_path: FilePath | DirectoryPath
     logging_level: int
 
@@ -241,46 +185,106 @@ def setup_environment(args: argparse.Namespace):
     return script_config
 
 
-def get_file_checksum(path: Path) -> str:
-    sha256_hash = hashlib.sha256()
-    with open(path, "rb") as f:
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-    return sha256_hash.hexdigest()
+def get_or_init(
+    project_name: str,
+    preprocessing_run_tag: str,
+    structure_run_tag: str,
+    session: Session,
+):
+    project = session.execute(
+        select(Project).filter_by(name=project_name)
+    ).scalar_one_or_none()
+    if not project:
+        raise ValueError(f"Project '{project_name}' not found")
+
+    preprocessing_run = next(
+        (r for r in project.preprocessing_runs if r.tag == preprocessing_run_tag),
+        None,
+    )
+    if not preprocessing_run:
+        raise ValueError(f"Preprocessing run '{preprocessing_run_tag}' not found")
+
+    structure_run = next(
+        (r for r in project.structure_runs if r.tag == structure_run_tag),
+        None,
+    )
+    if not structure_run:
+        structure_run = StructureRun(
+            tag=structure_run_tag, project=project, table_structures=[]
+        )
+        session.add(structure_run)
+
+    preprocessed_by_fname = {
+        PreprocessedScan.filename(ps.scan): ps
+        for ps in preprocessing_run.preprocessed_scans
+    }
+    structured_by_ps = {
+        ts.preprocessedScan_id: ts for ts in structure_run.table_structures
+    }
+    return (
+        project,
+        preprocessing_run,
+        structure_run,
+        preprocessed_by_fname,
+        structured_by_ps,
+    )
 
 
 def drop_existing_structure(
-    session: Any,
-    StructureTable: Any,
-    StructureCell: Any,
-    structure_run_tag: str,
-    scan_name: str,
+    session: Session,
+    structure_run_id: int,
+    preprocessed_scan_id: int,
 ) -> None:
-    """Drop existing tables and their cells for a specific scan and run tag."""
-    tables_to_del = (
-        session.query(StructureTable.id)
-        .filter_by(
-            structureRunTag=structure_run_tag,
-            scanName=scan_name,
+    """Drop existing tables and their cells for a specific preprocessed scan and run tag."""
+    tables = session.scalars(
+        select(TableStructure).filter_by(
+            run_id=structure_run_id,
+            preprocessedScan_id=preprocessed_scan_id,
         )
-        .all()
-    )
+    ).all()
 
-    if not tables_to_del:
-        return
+    for table in tables:
+        session.delete(table)
 
-    table_ids = [t.id for t in tables_to_del]
 
-    _ = (
-        session.query(StructureCell)
-        .filter(StructureCell.table_id.in_(table_ids))
-        .delete(synchronize_session=False)
-    )
-    _ = (
-        session.query(StructureTable)
-        .filter(StructureTable.id.in_(table_ids))
-        .delete(synchronize_session=False)
-    )
+def get_scan_configs(
+    input_dir: Path,
+    preprocessed_map: dict[str, PreprocessedScan],
+) -> dict[PreprocessedScan, PipelineConfig | ValidationError | KeyError]:
+    scan_config_dict = build_config_dict(input_dir, PipelineConfig)
+    return {
+        preprocessed_map[scan_path.name]: config_or_err
+        for scan_path, config_or_err in scan_config_dict.items()
+        if scan_path.name in preprocessed_map
+    }
+
+
+def filter_invalid_configs(
+    structure_configs: dict[
+        PreprocessedScan, PipelineConfig | ValidationError | KeyError
+    ],
+) -> dict[PreprocessedScan, PipelineConfig]:
+    valid: dict[PreprocessedScan, PipelineConfig] = {}
+    for ps, config in structure_configs.items():
+        if isinstance(config, ValidationError):
+            logging.error(f"Validation error for {ps.scan.filename}: {config}")
+        elif isinstance(config, KeyError):
+            logging.error(f"Key error for {ps.scan.filename}: {config}")
+        else:
+            valid[ps] = config
+    return valid
+
+
+def todo(
+    ps: PreprocessedScan,
+    overwrite: bool,
+    config: PipelineConfig,
+    structured_by_ps: dict[int, TableStructure],
+) -> bool:
+    existing = structured_by_ps.get(ps.id)
+    if overwrite or existing is None or existing.config != config.model_dump():
+        return True
+    return False
 
 
 def main():
@@ -289,73 +293,65 @@ def main():
     script_config = setup_environment(args)
 
     engine = create_engine(script_config.db_uri)
-    StructureTable, StructureCell = get_structure_models(script_config.table_prefix)
     Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
-
-    def is_valid_file(path: Path) -> bool:
-        return path.is_file() and (
-            path.suffix.strip(".") in script_config.image_formats
-        )
-
-    iostack = filter(
-        lambda entry: is_valid_file(entry[0]),
-        build_config_stack(
-            root=script_config.project_dir,
-            start=script_config.input_path,
-            model=PipelineConfig,
-            config_filename=script_config.pipeline_config_fname,
-        ),
-    )
-
-    scan_config_stack = sorted(
-        iostack,
-        key=lambda x: x[0],
-    )
 
     detector = NivoStructureDetection()
 
-    pbar = tqdm(scan_config_stack, desc="Processing scans")
-    with Session() as session:
-        for scan_path, scan_config in pbar:
-            logging.debug(f"Reading from {scan_path} with conf {scan_config}")
-            if scan_config is None:
-                pbar.write(
-                    f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: the configuration is invalid. Check the log."
+    with Session(engine) as session:
+        (
+            _,
+            _,
+            structure_run,
+            preprocessed_by_fname,
+            structured_by_ps,
+        ) = get_or_init(
+            script_config.project_name,
+            script_config.preprocessing_run_tag,
+            script_config.structure_run_tag,
+            session,
+        )
+
+        structure_configs = filter_invalid_configs(
+            get_scan_configs(script_config.input_path, preprocessed_by_fname)
+        )
+        todo_scans = sorted(
+            [
+                ps
+                for ps in structure_configs
+                if todo(
+                    ps, script_config.overwrite, structure_configs[ps], structured_by_ps
                 )
+            ],
+            key=lambda ps: ps.scan.filename,
+        )
+        scan_paths = find_nested_files(
+            {PreprocessedScan.filename(ps.scan): ps for ps in structure_configs},
+            script_config.input_path,
+        )
+
+        n_processed = 0
+        failed_scans: list[str] = []
+        pbar = tqdm(todo_scans, desc="Processing scans")
+        for preprocessed_scan in pbar:
+            pbar.set_description(f"Processing {preprocessed_scan.scan.filename}")
+
+            scan_path = scan_paths.get(preprocessed_scan)
+            if not scan_path:
+                pbar.write(f"Scan {preprocessed_scan.scan.filename} not found")
+                logging.error(f"Scan {preprocessed_scan.scan.filename} not found")
                 continue
 
-            pbar.set_description(f"Processing {scan_path.name}")
-
+            scan_config = structure_configs[preprocessed_scan]
             try:
-                # Check for existing entries
-                exists = (
-                    session.query(StructureTable)
-                    .filter_by(
-                        structureRunTag=script_config.structure_run_tag,
-                        scanName=scan_path.name,
-                    )
-                    .first()
-                    is not None
-                )
-
-                if exists and not script_config.overwrite:
-                    pbar.write(
-                        f"⏭ Skipped: {scan_path.relative_to(script_config.project_dir)} (already exists)"
-                    )
-                    continue
-
-                if exists and script_config.overwrite:
-                    # Delete existing entries to avoid primary key conflicts and stale data
+                # Drop stale entries if overwriting
+                if preprocessed_scan.id in structured_by_ps:
                     drop_existing_structure(
                         session,
-                        StructureTable,
-                        StructureCell,
-                        script_config.structure_run_tag,
-                        scan_path.name,
+                        structure_run.id,
+                        preprocessed_scan.id,
                     )
 
-                scan = read_matlike_image(scan_path, grayscale=False)
+                scan = read_matlike_image(scan_path)
                 structure, _ = detect_structure(
                     scan,
                     scan_config,
@@ -368,53 +364,54 @@ def main():
                 if len(structure.tables) == 0:
                     raise ValueError("No tables detected in the scan.")
 
-                # Calculate scan checksum
-                scan_checksum = get_file_checksum(scan_path)
-
                 for table in structure.tables:
                     header_spec = table.header_spec
                     content_spec = table.content_spec
                     index_spec = table.index_spec
 
-                    # Insert/Update Table
-                    table_result = StructureTable(
-                        preprocessingRunTag=script_config.preprocessing_run_tag,
-                        structureRunTag=script_config.structure_run_tag,
-                        scanName=scan_path.name,
-                        scanChecksum=scan_checksum,
+                    table_result = TableStructure(
+                        run=structure_run,
+                        preprocessed_scan=preprocessed_scan,
+                        config=scan_config.model_dump(),
                         bbox=table.full_region.to_dict(),
                         header=header_spec.to_dict() if header_spec else None,
                         index=index_spec.to_dict() if index_spec else None,
                         content=content_spec.to_dict(),
-                        num_rows=content_spec.nrows,
-                        num_cols=content_spec.ncols,
+                        nrows=content_spec.nrows,
+                        ncols=content_spec.ncols,
                     )
                     session.add(table_result)
                     session.flush()  # To get the table_result.id
 
-                    # Insert/Update Cells
                     for cell in content_spec.cells:
                         if cell.cell_region is None:
                             continue
-                        cell_result = StructureCell(
+                        cell_result = CellStructure(
                             table_id=table_result.id,
+                            bbox=cell.cell_region.to_dict(),
+                            config=scan_config.model_dump(),
                             row=cell.row,
-                            column=cell.column,
-                            cell_region=cell.cell_region.to_dict(),
+                            col=cell.column,
                         )
                         session.add(cell_result)
 
                 session.commit()
+                n_processed += 1
 
                 pbar.write(
                     f"✓ Processed: {scan_path.relative_to(script_config.project_dir)}"
                 )
             except Exception as e:
                 session.rollback()
+                failed_scans.append(scan_path.name)
                 pbar.write(
                     f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: {e}"
                 )
                 logging.exception(f"Error processing {scan_path}: {e}")
+
+        pbar.write(
+            f"\nProcessing complete: {n_processed} scans processed, {len(failed_scans)} failed."
+        )
 
 
 def create_argparser() -> argparse.ArgumentParser:
@@ -424,19 +421,19 @@ def create_argparser() -> argparse.ArgumentParser:
         description="""Batch structure detection of NIVO table images.""",
     )
 
-    # Input/Output arguments
+    # # Input/Output arguments
+    # _ = parser.add_argument(
+    #     "-i",
+    #     "--input-path",
+    #     required=False,
+    #     type=Path,
+    #     help="Directory of preprocessed scans to process. Defaults to project_dir/01_preprocess/preprocessing_run_tag.",
+    # )
     _ = parser.add_argument(
-        "-i",
-        "--input-path",
-        required=False,
-        type=Path,
-        help="Subset of the images to process. Could be a directory or a single image. Default is the project root's 01_preprocess/preprocessing_run_tag.",
-    )
-    _ = parser.add_argument(
-        "--table-prefix",
+        "--project-name",
         type=str,
-        default="structure_",
-        help="Prefix for the table and cell tables to store the results.",
+        required=True,
+        help="The name of the project.",
     )
     _ = parser.add_argument(
         "--preprocessing-run-tag",
@@ -469,13 +466,6 @@ def create_argparser() -> argparse.ArgumentParser:
         "--overwrite",
         action="store_true",
         help="Overwrite existing output values in the DB",
-    )
-
-    # Image formats
-    _ = parser.add_argument(
-        "--image-formats",
-        type=lambda s: set(s.split(",")),
-        help=f"Comma-separated list of image file formats to process (default: {','.join(AppConfig.model_fields['image_formats'].default)}",
     )
 
     _ = parser.add_argument("--logging-level", type=int, default=logging.INFO)
