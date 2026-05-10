@@ -18,7 +18,6 @@ preprocessingRun: {
   shape: sql_table
   id: int {constraint: [primary_key]}
   project: int {constraint: [foreign_key]}
-  config: json
   tag: string
   createdAt: datetime
   updatedAt: datetime
@@ -27,9 +26,10 @@ preprocessingRun: {
 
 preprocessedScan: {
   shape: sql_table
+  config: json
   id: int {constraint: primary_key}
-  scan: int {constraint: [foreign_key]}
   run: int {constraint: [foreign_key]}
+  scan: int {constraint: [foreign_key]}
   sha256Hash: string
   constraint: [unique(scan, run)]
 }
@@ -38,7 +38,6 @@ structureRun: {
   shape: sql_table
   id: int {constraint: [primary_key]}
   project: int {constraint: [foreign_key]}
-  config: json
   tag: string
   createdAt: datetime
   updatedAt: datetime
@@ -51,6 +50,7 @@ tableStructure: {
   id: int {constraint: [primary_key]}
   preprocessedScan: int {constraint: [foreign_key]}
   bbox: json
+  config: json
   header: json
   index: json
   content: json

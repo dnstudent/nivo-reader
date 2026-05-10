@@ -39,6 +39,19 @@ M = TypeVar("M", bound=BaseModel)
 P = TypeVar("P")
 
 
+def build_config_dict(
+    root: PathLike[str] | Path,
+    model: type[M],
+    start: PathLike[str] | Path | None = None,
+    section: str | None = None,
+    config_filename: str = "config.toml",
+    base_config: Config | None = None,
+):
+    return dict(
+        build_config_stack(root, model, start, section, config_filename, base_config)
+    )
+
+
 def build_config_stack(
     root: PathLike[str] | Path,
     model: type[M],
@@ -46,7 +59,7 @@ def build_config_stack(
     section: str | None = None,
     config_filename: str = "config.toml",
     base_config: Config | None = None,
-) -> Generator[tuple[Path, M | None], None, None]:
+) -> Generator[tuple[Path, M | ValidationError | KeyError], None, None]:
     """
     Traverse the directory tree starting at `root`, collecting the effective
     configuration for every regular file by merging nested dictionaries.
@@ -61,7 +74,7 @@ def build_config_stack(
 
     def walk(
         path: Path, parent_config: Config
-    ) -> Generator[tuple[Path, M | None], None, None]:
+    ) -> Generator[tuple[Path, M | ValidationError | KeyError], None, None]:
         if not path.name.startswith("."):
             # Nodes
             if path.is_dir():
@@ -92,12 +105,12 @@ def build_config_stack(
                     logging.error(
                         f"validation error for {path} with {file_config}: {ve}"
                     )
-                    yield path, None
-                except Exception as ke:
+                    yield path, ve
+                except KeyError as ke:
                     logging.exception(
                         f"key '{section}' not found in config for {path} with {file_config}: {ke}"
                     )
-                    yield path, None
+                    yield path, ke
 
     return walk(root, base)
 
@@ -131,3 +144,12 @@ def get_sha256(filepath: Path) -> str:
         for byte_block in iter(lambda: f.read(8192), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
+
+
+def find_nested_files[T](mapping: dict[str, T], root: Path) -> dict[T, Path]:
+    out: dict[T, Path] = {}
+    for path, _, files in root.walk():
+        for file in files:
+            if file in mapping:
+                out[mapping[file]] = path / file
+    return out
