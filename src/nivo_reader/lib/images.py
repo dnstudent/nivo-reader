@@ -2,6 +2,8 @@ from os import PathLike
 from pathlib import Path
 import cv2
 from cv2.typing import MatLike
+import numpy as np
+from PIL import Image
 
 OPENCV_SUPPORTED_FORMATS = {
     ".bmp",
@@ -30,9 +32,7 @@ OPENCV_SUPPORTED_FORMATS = {
 }
 
 
-def read_matlike_image(
-    image_path: PathLike[str] | Path, grayscale: bool = False
-) -> MatLike:
+def read_matlike_image(image_path: PathLike[str] | Path) -> MatLike:
     """
     Load a BGR or grayscale image as a numpy array
 
@@ -47,8 +47,9 @@ def read_matlike_image(
         ValueError: If the image cannot be loaded
     """
     image_path = Path(image_path)
-    flags = cv2.IMREAD_COLOR if not grayscale else cv2.IMREAD_GRAYSCALE
-    maybe_image: MatLike | None = cv2.imread(str(image_path), flags)
-    if maybe_image is None:
-        raise ValueError(f"Could not load image {image_path}")
+    maybe_image: MatLike | None = cv2.cvtColor(
+        np.array(Image.open(image_path).convert("RGB")), cv2.COLOR_RGB2BGR
+    )
+    if maybe_image is None:  # pyright: ignore[reportUnnecessaryComparison]
+        raise ValueError(f"Could not load image {image_path}")  # pyright: ignore[reportUnreachable]
     return maybe_image
