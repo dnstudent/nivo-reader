@@ -29,24 +29,28 @@ from sqlalchemy.orm import Session
 from tqdm import tqdm
 
 from nivo_reader.lib.images import read_matlike_image
+from nivo_reader.models.db import (
+    Base,
+    CellStructure,
+    PreprocessedScan,
+    Project,
+    StructureRun,
+    TableStructure,
+)
 from nivo_reader.modules.structure_detection.base import (
     StructureDetector,
     StructureResult,
 )
 from nivo_reader.modules.structure_detection.nivo_structure_detection import (
     NivoStructureDetection,
+)
+from nivo_reader.modules.structure_detection.nivo_structure_detection import (
     NivoStructureDetectionConfig as PipelineConfig,
 )
-from nivo_reader.models.db import (
-    Base,
-    Project,
-    StructureRun,
-    PreprocessedScan,
-    TableStructure,
-    CellStructure,
+from nivo_reader.scripts.utils.paths import (
+    build_config_dict,
+    find_nested_files,
 )
-from nivo_reader.scripts.utils.paths import build_config_dict, find_nested_files
-
 
 STEP_NUMBER = "02"
 STEP_NAME = "table_structure"
@@ -191,9 +195,9 @@ def get_or_init(
     structure_run_tag: str,
     session: Session,
 ):
-    project = session.execute(
+    project = session.scalars(
         select(Project).filter_by(name=project_name)
-    ).scalar_one_or_none()
+    ).one_or_none()
     if not project:
         raise ValueError(f"Project '{project_name}' not found")
 
@@ -209,42 +213,19 @@ def get_or_init(
         None,
     )
     if not structure_run:
-        structure_run = StructureRun(
-            tag=structure_run_tag, project=project, table_structures=[]
-        )
+        structure_run = StructureRun(tag=structure_run_tag, project=project)
         session.add(structure_run)
+        session.flush()
 
-    preprocessed_by_fname = {
-        PreprocessedScan.filename(ps.scan): ps
-        for ps in preprocessing_run.preprocessed_scans
-    }
-    structured_by_ps = {
-        ts.preprocessedScan_id: ts for ts in structure_run.table_structures
-    }
-    return (
-        project,
-        preprocessing_run,
-        structure_run,
-        preprocessed_by_fname,
-        structured_by_ps,
-    )
+    # preprocessed_by_fname = {
+    #     PreprocessedScan.filename(ps.scan): ps
+    #     for ps in preprocessing_run.preprocessed_scans
+    # }
+    # structured_by_ps = {
+    #     ts.preprocessedScan_id: ts for ts in structure_run.table_structures
+    # }
 
-
-def drop_existing_structure(
-    session: Session,
-    structure_run_id: int,
-    preprocessed_scan_id: int,
-) -> None:
-    """Drop existing tables and their cells for a specific preprocessed scan and run tag."""
-    tables = session.scalars(
-        select(TableStructure).filter_by(
-            run_id=structure_run_id,
-            preprocessedScan_id=preprocessed_scan_id,
-        )
-    ).all()
-
-    for table in tables:
-        session.delete(table)
+    return preprocessing_run, structure_run
 
 
 def get_scan_configs(
@@ -287,6 +268,67 @@ def todo(
     return False
 
 
+class NoTablesError(RuntimeError):
+    def __init__(self, preprocessed_scan: PreprocessedScan):
+        super().__init__(f"No tables detected in {preprocessed_scan.scan.filename}")
+
+
+def detect_structure_and_persist(
+    structure_run: StructureRun,
+    preprocessed_scan: PreprocessedScan,
+    config: PipelineConfig,
+    scan_path: Path,
+    detector: NivoStructureDetection,
+    script_config: AppConfig,
+    session: Session,
+):
+    scan = read_matlike_image(scan_path)
+    structure, _ = detect_structure(
+        scan,
+        config,
+        detector,
+        script_config.debug_dir / scan_path.with_suffix(".jpg").name
+        if script_config.debug_dir
+        else None,
+    )
+
+    if len(structure.tables) == 0:
+        raise NoTablesError(preprocessed_scan)
+
+    for table in structure.tables:
+        header_spec = table.header_spec
+        content_spec = table.content_spec
+        index_spec = table.index_spec
+
+        table_result = TableStructure(
+            run=structure_run,
+            preprocessed_scan=preprocessed_scan,
+            config=config.model_dump(),
+            bbox=table.full_region.to_dict(),
+            header=header_spec.to_dict() if header_spec else None,
+            index=index_spec.to_dict() if index_spec else None,
+            content=content_spec.to_dict(),
+            nrows=content_spec.nrows,
+            ncols=content_spec.ncols,
+        )
+
+        for cell in content_spec.cells:
+            if cell.cell_region is None:
+                continue
+            table_result.cell_structures.append(
+                CellStructure(
+                    bbox=cell.cell_region.to_dict(),
+                    config=config.model_dump(),
+                    row=cell.row,
+                    col=cell.column,
+                )
+            )
+            # session.add(cell_result)
+
+        session.add(table_result)
+        session.flush()  # To get the table_result.id
+
+
 def main():
     parser = create_argparser()
     args = parser.parse_args()
@@ -297,13 +339,12 @@ def main():
 
     detector = NivoStructureDetection()
 
-    with Session(engine) as session:
+    with Session(engine) as session, session.begin():
         (
-            _,
-            _,
+            preprocessing_run,
             structure_run,
-            preprocessed_by_fname,
-            structured_by_ps,
+            # preprocessed_by_fname,
+            # structured_by_ps,
         ) = get_or_init(
             script_config.project_name,
             script_config.preprocessing_run_tag,
@@ -311,103 +352,65 @@ def main():
             session,
         )
 
-        structure_configs = filter_invalid_configs(
-            get_scan_configs(script_config.input_path, preprocessed_by_fname)
-        )
-        todo_scans = sorted(
-            [
-                ps
-                for ps in structure_configs
-                if todo(
-                    ps, script_config.overwrite, structure_configs[ps], structured_by_ps
-                )
-            ],
-            key=lambda ps: ps.scan.filename,
-        )
-        scan_paths = find_nested_files(
-            {PreprocessedScan.filename(ps.scan): ps for ps in structure_configs},
+        scan_map = {ps.filename: ps for ps in preprocessing_run.preprocessed_scans}
+
+        _structure_configs = build_config_dict(
             script_config.input_path,
+            PipelineConfig,
+        )
+        structure_configs = {
+            scan_map[k.name]: v for k, v in _structure_configs.items() if k in scan_map
+        }
+
+        scan_paths = find_nested_files(scan_map, script_config.input_path)
+        detected_scans = set(
+            map(lambda x: x.preprocessed_scan, structure_run.table_structures)
         )
 
         n_processed = 0
         failed_scans: list[str] = []
-        pbar = tqdm(todo_scans, desc="Processing scans")
-        for preprocessed_scan in pbar:
-            pbar.set_description(f"Processing {preprocessed_scan.scan.filename}")
+        pbar = tqdm(preprocessing_run.preprocessed_scans, desc="Processing scans")
+        for pscan in pbar:
+            pbar.set_description(f"Processing {pscan.scan.filename}")
 
-            scan_path = scan_paths.get(preprocessed_scan)
+            scan_path = scan_paths.get(pscan)
             if not scan_path:
-                pbar.write(f"Scan {preprocessed_scan.scan.filename} not found")
-                logging.error(f"Scan {preprocessed_scan.scan.filename} not found")
+                pbar.write(f"Scan {pscan.scan.filename} not found")
+                logging.error(f"Scan {pscan.scan.filename} not found")
                 continue
 
-            scan_config = structure_configs[preprocessed_scan]
-            try:
-                # Drop stale entries if overwriting
-                if preprocessed_scan.id in structured_by_ps:
-                    drop_existing_structure(
-                        session,
-                        structure_run.id,
-                        preprocessed_scan.id,
-                    )
-
-                scan = read_matlike_image(scan_path)
-                structure, _ = detect_structure(
-                    scan,
-                    scan_config,
-                    detector,
-                    script_config.debug_dir / scan_path.with_suffix(".jpg").name
-                    if script_config.debug_dir
-                    else None,
+            scan_config = structure_configs[pscan]
+            if isinstance(scan_config, (ValidationError, KeyError, Exception)):
+                pbar.write(f"Invalid config for {pscan.scan.filename}")
+                logging.error(
+                    f"Invalid config for {pscan.scan.filename}: {scan_config}"
                 )
+                continue
+            # Drop stale entries if overwriting
+            if pscan in detected_scans and script_config.overwrite:
+                pscan.table_structures.clear()
+                session.flush()
 
-                if len(structure.tables) == 0:
-                    raise ValueError("No tables detected in the scan.")
-
-                for table in structure.tables:
-                    header_spec = table.header_spec
-                    content_spec = table.content_spec
-                    index_spec = table.index_spec
-
-                    table_result = TableStructure(
-                        run=structure_run,
-                        preprocessed_scan=preprocessed_scan,
-                        config=scan_config.model_dump(),
-                        bbox=table.full_region.to_dict(),
-                        header=header_spec.to_dict() if header_spec else None,
-                        index=index_spec.to_dict() if index_spec else None,
-                        content=content_spec.to_dict(),
-                        nrows=content_spec.nrows,
-                        ncols=content_spec.ncols,
-                    )
-                    session.add(table_result)
-                    session.flush()  # To get the table_result.id
-
-                    for cell in content_spec.cells:
-                        if cell.cell_region is None:
-                            continue
-                        cell_result = CellStructure(
-                            table_id=table_result.id,
-                            bbox=cell.cell_region.to_dict(),
-                            config=scan_config.model_dump(),
-                            row=cell.row,
-                            col=cell.column,
-                        )
-                        session.add(cell_result)
-
-                session.commit()
+            try:
+                detect_structure_and_persist(
+                    structure_run=structure_run,
+                    preprocessed_scan=pscan,
+                    config=scan_config,
+                    scan_path=scan_path,
+                    detector=detector,
+                    script_config=script_config,
+                    session=session,
+                )
+            except NoTablesError as e:
+                pbar.write(f"No tables detected in {scan_path.name}")
+                failed_scans.append(scan_path.name)
+                logging.exception(f"No tables detected in {scan_path}: {e}")
+            else:
                 n_processed += 1
 
                 pbar.write(
                     f"✓ Processed: {scan_path.relative_to(script_config.project_dir)}"
                 )
-            except Exception as e:
-                session.rollback()
-                failed_scans.append(scan_path.name)
-                pbar.write(
-                    f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: {e}"
-                )
-                logging.exception(f"Error processing {scan_path}: {e}")
 
         pbar.write(
             f"\nProcessing complete: {n_processed} scans processed, {len(failed_scans)} failed."
