@@ -19,174 +19,85 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>."""
 import argparse
 import logging
 import sys
-import warnings
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from string import ascii_letters
+from typing import Any, cast
 
-from cv2.typing import MatLike
-import numpy as np
+import easyocr
 import polars as pl
-from PIL import Image
-from pydantic import (
-    BaseModel,
-    DirectoryPath,
-    FilePath,
-    NonNegativeInt,
-    PositiveInt,
-    Field,
-)
+import tesserocr
+from pydantic import BaseModel, DirectoryPath, FilePath
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 from tqdm import tqdm
 
-
-from nivo_reader.nivo_reader import read_nivo_table
-from nivo_reader.scripts.utils.paths import build_config_stack, mkopath
 from nivo_reader.lib.images import read_matlike_image
+from nivo_reader.models.db import (
+    Base,
+    CellContent,
+    DigitizationRun,
+    Project,
+    TableStructure,
+)
+from nivo_reader.modules.preprocessing.base import PreprocessingPipeline
+from nivo_reader.modules.preprocessing.image_cleaning import Binarization, LineEraser
+from nivo_reader.modules.table_digitization import CellsListDigitizer, MultipleOCRModule
+from nivo_reader.modules.table_digitization.ocrs.easyocr import (
+    EasyOCRParagraph,
+    EasyOCRWord,
+)
+from nivo_reader.modules.table_digitization.ocrs.paddleocr import PaddleOCR
+from nivo_reader.modules.table_digitization.ocrs.tesserocr import (
+    build_tesserocr_number_ocr,
+    build_tesserocr_text_ocr,
+)
+from nivo_reader.scripts.utils.paths import find_nested_files
 
-# Suppress pin_memory warnings from PyTorch/EasyOCR
-warnings.filterwarnings("ignore", message=".*pin_memory.*")
-logging.getLogger("paddlex").setLevel(logging.ERROR)
-logging.getLogger("paddle").setLevel(logging.ERROR)
-logging.getLogger("pytesseract").setLevel(logging.ERROR)
-
-
-class RectSpec(BaseModel):
-    width: PositiveInt
-    height: PositiveInt
-
-
-class ClipSpec(BaseModel):
-    top: NonNegativeInt
-    bottom: NonNegativeInt
-    left: NonNegativeInt
-    right: NonNegativeInt
+STEP_NUMBER = "03"
+STEP_NAME = "digitization"
 
 
 class PipelineConfig(BaseModel):
-    table_shape: RectSpec
-    clips: ClipSpec
-    station_char_shape: RectSpec
-    number_char_shape: RectSpec
-    roi_padding: NonNegativeInt
-    nchars_threshold: NonNegativeInt
-    extra_width: NonNegativeInt
-    multi_row_station_names: bool
-    from_extracted_structure: bool
+    pass
 
 
 class AppConfig(BaseModel):
-    output_dir: Path
+    db_uri: str
+    project_name: str
+    preprocessing_run_tag: str
+    structure_run_tag: str
+    digitization_run_tag: str
     project_dir: DirectoryPath
     debug_dir: Path | None = None
-    image_formats: set[str] = {"png", "jpg", "jpeg", "gif"}
     overwrite: bool = False
-    ocr_engines: set[str] = {"tesseract", "easyocr", "paddleocr"}
-    pipeline_config_fname: str = "config.toml"
-    input_path: FilePath | DirectoryPath = Field(
-        default_factory=lambda data: data["project_dir"]
-    )
+    input_path: FilePath | DirectoryPath
+    scan_list: FilePath | None
     logging_level: int
 
 
-_OCR_CACHE: dict[str, Any] = {}
-
-
-def get_ocrs(ocr_engines: set[str]):
-    ocrs: dict[str, Any] = {}
-    for engine in ocr_engines:
-        if engine in _OCR_CACHE:
-            ocrs[engine] = _OCR_CACHE[engine]
-        else:
-            if engine == "easyocr":
-                import easyocr
-
-                _OCR_CACHE["easyocr"] = easyocr.Reader(lang_list=["it"])
-                ocrs["easyocr"] = _OCR_CACHE["easyocr"]
-            elif engine == "paddleocr":
-                import paddleocr
-
-                _OCR_CACHE["paddleocr"] = paddleocr.TextRecognition(
-                    model_name="latin_PP-OCRv5_mobile_rec"
-                )
-                ocrs["paddleocr"] = _OCR_CACHE["paddleocr"]
-            elif engine == "tesseract":
-                _OCR_CACHE["tesseract"] = None
-                ocrs["tesseract"] = None
-            elif engine == "tesserocr":
-                import tesserocr as to
-
-                _OCR_CACHE["tesserocr"] = to.PyTessBaseAPI(
-                    path="/opt/homebrew/opt/tesseract/share/tessdata/",
-                    lang="ita",
-                    psm=to.PSM.AUTO,
-                )
-                ocrs["tesserocr"] = _OCR_CACHE["tesserocr"]
-    return ocrs
-
-
-def digitize(
-    scan: MatLike,
-    scan_config: PipelineConfig,
-    ocrs: dict[str, Any],
-    debug_dir: Path | None,
-) -> pl.DataFrame:
-    clips = (
-        scan_config.clips.top,
-        scan_config.clips.bottom,
-        scan_config.clips.left,
-        scan_config.clips.right,
-    )
-    table_shape = (
-        scan_config.table_shape.width,
-        scan_config.table_shape.height,
-    )
-    station_char_shape = (
-        scan_config.station_char_shape.width,
-        scan_config.station_char_shape.height,
-    )
-    number_char_shape = (
-        scan_config.number_char_shape.width,
-        scan_config.number_char_shape.height,
-    )
-    return read_nivo_table(
-        scan,
-        clips,
-        table_shape,
-        ocrs,
-        scan_config.multi_row_station_names,
-        scan_config.from_extracted_structure,
-        station_char_shape,
-        number_char_shape,
-        scan_config.roi_padding,
-        scan_config.nchars_threshold,
-        scan_config.extra_width,
-        debug_dir,
-    ).cast(
-        {
-            "content": pl.String,
-            "confidence": pl.Float32,
-            "bounding_box": pl.Struct(
-                {
-                    "x": pl.Int16,
-                    "y": pl.Int16,
-                    "width": pl.Int16,
-                    "height": pl.Int16,
-                }
-            ),
-            "row": pl.Int8,
-            "column": pl.Int8,
-            "reader": pl.Categorical("reader"),
-        }
-    )
-
-
 def setup_environment(args: argparse.Namespace):
-    cli_params = {
-        k: v
-        for k, v in vars(args).items()
-        if v is not None and k in AppConfig.model_fields
-    }
-    if "input_path" in cli_params and not Path(cli_params["input_path"]).is_absolute():
-        cli_params["input_path"] = cli_params["project_dir"] / cli_params["input_path"]
+    cli_params = {k: v for k, v in vars(args).items() if k in AppConfig.model_fields}
+
+    project_dir = Path(cli_params.get("project_dir", args.project_dir))
+
+    cli_params["db_uri"] = f"sqlite+pysqlite:///{project_dir}/db.sqlite"
+
+    if getattr(args, "debug", False):
+        cli_params["debug_dir"] = (
+            project_dir
+            / "xx_debug"
+            / f"{STEP_NUMBER}_{STEP_NAME}"
+            / args.digitization_run_tag
+        )
+
+    if "input_path" not in cli_params:
+        cli_params["input_path"] = (
+            project_dir / "01_preprocess" / args.preprocessing_run_tag
+        )
+    elif not Path(cli_params["input_path"]).is_absolute():
+        cli_params["input_path"] = project_dir / cli_params["input_path"]
+
     script_config = AppConfig(**cli_params)
 
     # Validate images directory
@@ -194,160 +105,330 @@ def setup_environment(args: argparse.Namespace):
         logging.error(f"Error: Input path {script_config.input_path} not valid")
         sys.exit(1)
 
-    output_dir = script_config.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     debug_dir = script_config.debug_dir
     if debug_dir:
         Path(debug_dir).mkdir(exist_ok=True, parents=True)
         logging.basicConfig(
             level=script_config.logging_level,
-            filename=Path(debug_dir) / "reader.log",
+            filename=Path(debug_dir) / "digitization.log",
             filemode="a",
             format="[%(asctime)s][%(levelname)s]%(name)s - %(message)s",
         )
     else:
         logging.basicConfig(level=script_config.logging_level)
 
-    logging.info(f"engines: {script_config.ocr_engines}")
     return script_config
+
+
+def get_or_init(
+    project_name: str,
+    preprocessing_run_tag: str,
+    structure_run_tag: str,
+    digitization_run_tag: str,
+    session: Session,
+):
+    project = session.scalars(
+        select(Project).filter_by(name=project_name)
+    ).one_or_none()
+    if not project:
+        raise ValueError(f"Project '{project_name}' not found")
+
+    preprocessing_run = next(
+        (r for r in project.preprocessing_runs if r.tag == preprocessing_run_tag),
+        None,
+    )
+    if not preprocessing_run:
+        raise ValueError(f"Preprocessing run '{preprocessing_run_tag}' not found")
+
+    structure_run = next(
+        (r for r in project.structure_runs if r.tag == structure_run_tag),
+        None,
+    )
+    if not structure_run:
+        raise ValueError(f"Structure run '{structure_run_tag}' not found")
+
+    digitization_run = next(
+        (r for r in project.digitization_runs if r.tag == digitization_run_tag),
+        None,
+    )
+    if not digitization_run:
+        digitization_run = DigitizationRun(tag=digitization_run_tag, project=project)
+        session.add(digitization_run)
+        session.flush()
+
+    return preprocessing_run, structure_run, digitization_run
+
+
+def digitize_and_persist(
+    digitization_run: DigitizationRun,
+    table_structure: TableStructure,
+    scan_path: Path,
+    digitizers: tuple[CellsListDigitizer[Any], ...],
+    script_config: AppConfig,
+    session: Session,
+):
+
+    # cells = [cell.to_ocr_cellspec() for cell in table_structure.cell_structures]
+
+    if not table_structure.cell_structures:
+        logging.warning(f"No cells found for table {table_structure.id}")
+        return
+
+    # Bad hack
+    if cell := next(iter(table_structure.cell_structures), None):
+        if (
+            any(
+                filter(
+                    lambda content: cast(CellContent, content).run == digitization_run,
+                    cell.cell_contents,
+                )
+            )
+            and not script_config.overwrite
+        ):
+            return
+
+    # Handle overwrite logic - clear existing contents for this run
+    with session.begin_nested():
+        for digitizer in digitizers:
+            ocr_name = digitizer.ocr.name
+            ocr_version = digitizer.ocr.version
+            if script_config.overwrite:
+                for cell_struct in table_structure.cell_structures:
+                    # Delete all contents for this cell and this run using proper ORM
+                    stmt = select(CellContent).where(
+                        CellContent.cell_id == cell_struct.id,
+                        CellContent.run_id == digitization_run.id,
+                        CellContent.reader == ocr_name,
+                        CellContent.reader_version == ocr_version,
+                    )
+                    contents_to_delete = session.scalars(stmt).all()
+                    for content in contents_to_delete:
+                        session.delete(content)
+            logging.info(
+                f"Running {ocr_name} (v{ocr_version}) on table {table_structure.id}"
+            )
+            start = datetime.now()
+
+            debug_path = (
+                script_config.debug_dir / f"{scan_path.with_suffix('.jpg').name}"
+                if script_config.debug_dir
+                else None
+            )
+            if debug_path:
+                debug_path.parent.mkdir(parents=True, exist_ok=True)
+
+            scan = read_matlike_image(scan_path)
+            results = digitizer(
+                scan,
+                [cell.to_ocr_cellspec() for cell in table_structure.cell_structures],
+                debug_path=debug_path,
+            )
+            cells_by_position = {
+                (cell.row, cell.col): cell for cell in table_structure.cell_structures
+            }
+            for result in results:
+                # Find or create CellContent
+                content = CellContent(
+                    cell=cells_by_position[
+                        (result.cell_spec.row, result.cell_spec.col)
+                    ],
+                    run=digitization_run,
+                    reader=ocr_name,
+                    reader_version=ocr_version,
+                    content=result.text,
+                    confidence=result.confidence,
+                    config=None,  # digitizer.ocr.to_dict(),
+                )
+                session.add(content)
+
+            logging.info(
+                f"Ran {ocr_name} (v{ocr_version}) on table {table_structure.id}. It took {(datetime.now() - start).total_seconds()} seconds."
+            )
+        session.flush()
 
 
 def main():
     parser = create_argparser()
     args = parser.parse_args()
     script_config = setup_environment(args)
-
-    def to_digitize(path: Path) -> bool:
-        return (
-            path.is_file()
-            and (path.suffix.strip(".") in script_config.image_formats)
-            and (
-                script_config.overwrite
-                or not mkopath(
-                    path,
-                    script_config.output_dir,
-                    new_suffix=".arrow",
-                ).exists()
-            )
+    scan_list: set[str] | None = (
+        set(
+            pl.read_excel(script_config.scan_list)
+            .filter(pl.col("student").is_not_null())["filename"]
+            .to_list()
         )
+        if script_config.scan_list
+        else None
+    )
 
-    iostack = map(
-        lambda entry: (
-            entry[0],
-            entry[1],
-            mkopath(entry[0], script_config.output_dir, new_suffix=".arrow"),
+    def scan_in_list(scan_filename: str):
+        return scan_list is None or scan_filename in scan_list
+
+    engine = create_engine(script_config.db_uri)
+    Base.metadata.create_all(engine)
+
+    # Setup Preprocessing Pipeline as requested
+    preprocessor = PreprocessingPipeline(
+        "pipeline", [Binarization("binarization"), LineEraser("line_eraser")]
+    )
+
+    # Initialize OCRs
+    ocr_modules = (
+        MultipleOCRModule(
+            name="tesserocr",
+            version=tesserocr.tesseract_version(),
+            ocrs=(
+                build_tesserocr_text_ocr("ita"),
+                build_tesserocr_number_ocr("ita", extra_whitelist="?»>-_"),
+            ),
+            filters=[lambda cell: cell.col == 0, lambda cell: cell.col != 0],
         ),
-        build_config_stack(
-            root=script_config.project_dir,
-            start=script_config.input_path,
-            model=PipelineConfig,
-            config_filename=script_config.pipeline_config_fname,
+        PaddleOCR(model_name="latin_PP-OCRv5_mobile_rec", kwargs={}),
+        MultipleOCRModule(
+            name="easyocr",
+            version=easyocr.__version__,
+            ocrs=(
+                EasyOCRParagraph(
+                    lang_list=["it"],
+                    call_config={"allowlist": f"{ascii_letters}'.-"},
+                    name="easyocr",
+                    version=easyocr.__version__,
+                ),
+                EasyOCRWord(
+                    lang_list=["it"],
+                    call_config={"allowlist": "0123456789-?>»_"},
+                    name="easyocr",
+                    version=easyocr.__version__,
+                ),
+            ),
+            filters=[lambda cell: cell.col == 0, lambda cell: cell.col != 0],
         ),
     )
 
-    scan_config_stack = sorted(
-        # Keep only entries that should be digitized (according to file format and overwrite rules)
-        filter(
-            lambda entry: to_digitize(entry[0]),
-            # Build the configuration tree
-            iostack,
-        ),
-        key=lambda x: x[2],
+    digitizers = tuple(
+        [CellsListDigitizer[Any](ocr, preprocessor) for ocr in ocr_modules]
     )
 
-    ocrs = get_ocrs(script_config.ocr_engines)
+    with Session(engine) as session:  # , session.begin():
+        (
+            preprocessing_run,
+            structure_run,
+            digitization_run,
+        ) = get_or_init(
+            script_config.project_name,
+            script_config.preprocessing_run_tag,
+            script_config.structure_run_tag,
+            script_config.digitization_run_tag,
+            session,
+        )
 
-    pbar = tqdm(scan_config_stack, desc="Processing scans")
-    for scan_path, scan_config, scan_output in pbar:
-        logging.debug(
-            f"Reading from {scan_path} to {scan_output} with conf {scan_config}"
+        # Get all tables from the given structure run
+        tables = sorted(
+            structure_run.table_structures,
+            key=lambda table: table.preprocessed_scan.filename,
         )
-        if scan_config is None:
-            pbar.write(
-                f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: the configuration is invalid. Check the log."
-            )
-            continue
-        pbar.set_description(f"Processing {scan_path.name}")
-        scan_debug_dir = (
-            mkopath(scan_path, Path(script_config.debug_dir), mkdir=True)
-            if script_config.debug_dir
-            else None
-        )
-        try:
-            scan = read_matlike_image(scan_path)
-            df = digitize(scan, scan_config, ocrs, scan_debug_dir)
-            scan_output.parent.mkdir(parents=True, exist_ok=True)
-            df.write_ipc(scan_output, compression="zstd")
-            pbar.write(
-                f"✓ Processed: {scan_path.relative_to(script_config.project_dir)}"
-            )
-        except Exception as e:
-            pbar.write(
-                f"✗ Error processing {scan_path.relative_to(script_config.project_dir)}: {e}"
-            )
-            logging.exception(f"Error processing {scan_path}: {e}")
+        if args.num:
+            tables = tables[: args.num]
+
+        # Map scans to paths
+        scan_map = {ps.filename: ps for ps in preprocessing_run.preprocessed_scans}
+        scan_paths = find_nested_files(scan_map, script_config.input_path)
+
+        n_processed = 0
+        pbar = tqdm(tables, desc="Digitizing tables")
+        for table in pbar:
+            pscan = table.preprocessed_scan
+            if not scan_in_list(pscan.scan.filename):
+                pbar.write(f"Scan {pscan.scan.filename} is not in list")
+                continue
+            pbar.set_description(f"Digitizing {pscan.scan.filename}")
+
+            scan_path = scan_paths.get(pscan)
+            if not scan_path:
+                pbar.write(
+                    f"Scan {pscan.filename} not found in {script_config.input_path}"
+                )
+                logging.error(f"Scan {pscan.scan.filename} not found")
+                continue
+
+            try:
+                digitize_and_persist(
+                    digitization_run=digitization_run,
+                    table_structure=table,
+                    scan_path=scan_path,
+                    digitizers=digitizers,
+                    script_config=script_config,
+                    session=session,
+                )
+                n_processed += 1
+            except KeyboardInterrupt:
+                pbar.write("Commiting session and exiting gracefully...")
+                session.commit()
+                sys.exit()
+            except Exception as e:
+                pbar.write(
+                    f"Error digitizing table {table.id} in scan {pscan.scan.filename}: {e}"
+                )
+                logging.exception(
+                    f"Error digitizing table {table.id} in scan {pscan.scan.filename}: {e}"
+                )
+
+        pbar.write(f"\nDigitization complete: {n_processed} tables processed.")
 
 
 def create_argparser() -> argparse.ArgumentParser:
     """Create and configure argument parser for batch processing."""
     parser = argparse.ArgumentParser(
-        prog="nivo-reader",
+        prog="nivo-reader-digitization",
         description="""Batch digitization of NIVO table images.""",
     )
 
-    # Input/Output arguments
     _ = parser.add_argument(
-        "-i",
-        "--input-path",
-        required=False,
-        type=Path,
-        help="Subset of the images to process. Could be a directory or a single image. Default is the project root.",
-    )
-    _ = parser.add_argument(
-        "-o",
-        "--output-dir",
+        "--project-name",
+        type=str,
         required=True,
-        type=Path,
-        help="Output directory for Excel files",
+        help="The name of the project.",
     )
     _ = parser.add_argument(
-        "-d",
-        "--debug-dir",
-        type=Path,
-        required=False,
-        help="Base directory for debug artifacts. Optional.",
+        "--preprocessing-run-tag",
+        required=True,
+        type=str,
+        help="Tag of the preprocessing run the scans come from.",
+    )
+    _ = parser.add_argument(
+        "--structure-run-tag",
+        required=True,
+        type=str,
+        help="Tag of the structure detection run.",
+    )
+    _ = parser.add_argument(
+        "--digitization-run-tag",
+        required=True,
+        type=str,
+        help="Tag assigned by the user to the current digitization run.",
     )
     _ = parser.add_argument(
         "-p",
         "--project-dir",
         type=Path,
         required=True,
-        help="The main directory of the project containing the NIVO table images in a subdirectory.",
+        help="The main directory of the project.",
     )
-    # Overwrite flag
+    _ = parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Generate debug artifacts.",
+    )
     _ = parser.add_argument(
         "-w",
         "--overwrite",
         action="store_true",
-        help="Overwrite existing output files",
+        help="Overwrite existing output values in the DB",
     )
-
-    # Image formats
-    _ = parser.add_argument(
-        "--image-formats",
-        type=lambda s: set(s.split(",")),
-        help=f"Comma-separated list of image file formats to process (default: {','.join(AppConfig.model_fields['image_formats'].default)}",
-    )
-
-    # OCR
-    _ = parser.add_argument(
-        "--ocr-engines",
-        type=lambda s: set(s.split(",")),
-        help=f"Comma-separated list of OCR engines to use. Available engines: tesseract, tesserocr, easyocr, paddleocr. Default: {','.join(AppConfig.model_fields['ocr_engines'].default)}",
-    )
-
     _ = parser.add_argument("--logging-level", type=int, default=logging.INFO)
+    _ = parser.add_argument("--num", type=int)
+    _ = parser.add_argument("--scan-list", type=Path)
     return parser
 
 
