@@ -2,8 +2,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, final
 
-from sqlalchemy import JSON, Enum, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import JSON, Float, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from nivo_reader.lib.common import BoundingBox
+from nivo_reader.modules.table_digitization.base import OCRCellSpec
 
 
 class Base(DeclarativeBase):
@@ -106,17 +109,21 @@ class PreprocessedScan(Base):
     scan: Mapped["Scan"] = relationship(back_populates="preprocessed_scans")
     run: Mapped["PreprocessingRun"] = relationship(back_populates="preprocessed_scans")
     table_structures: Mapped[list["TableStructure"]] = relationship(
-        back_populates="preprocessed_scan"
+        back_populates="preprocessed_scan", cascade="all, delete, delete-orphan"
     )
 
+    @property
+    def filename(self):
+        return self.filename_from(self.scan)
+
     @classmethod
-    def filename(cls, scan: Scan):
+    def filename_from(cls, scan: Scan):
         return Path(scan.filename).with_suffix(".png").name
 
     @classmethod
     def find_path(cls, scan: Scan, output_dir: Path):
         return next(
-            (path for path in output_dir.rglob(f"**/{cls.filename(scan)}")),
+            (path for path in output_dir.rglob(f"{cls.filename_from(scan)}")),
             None,
         )
 
@@ -211,7 +218,16 @@ class CellStructure(Base):
     col: Mapped[int] = mapped_column(nullable=False, doc="Column index of the cell")
 
     table: Mapped["TableStructure"] = relationship(back_populates="cell_structures")
-    cell_contents: Mapped[list["CellContent"]] = relationship(back_populates="cell")
+    cell_contents: Mapped[list["CellContent"]] = relationship(
+        back_populates="cell", cascade="all, delete, delete-orphan"
+    )
+
+    def to_ocr_cellspec(self) -> OCRCellSpec[BoundingBox]:
+        return OCRCellSpec(
+            bbox=BoundingBox(**self.bbox),
+            col=self.col,
+            row=self.row,
+        )
 
 
 @final
@@ -222,7 +238,6 @@ class DigitizationRun(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id"), nullable=False)
     tag: Mapped[str] = mapped_column(String, nullable=False)
-    ocr: Mapped[str | None] = mapped_column(String, nullable=True)
     createdAt: Mapped[datetime] = mapped_column(
         server_default=func.now(), nullable=False
     )
@@ -231,25 +246,41 @@ class DigitizationRun(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="digitization_runs")
-    cell_contents: Mapped[list["CellContent"]] = relationship(back_populates="run")
+    cell_contents: Mapped[list["CellContent"]] = relationship(
+        back_populates="run", cascade="all, delete, delete-orphan"
+    )
+
+
+# @final
+# class Reader(Base):
+#     __tablename__ = "reader"
+#     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+#     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+#     version: Mapped[str] = mapped_column(String, nullable=False)
+#     description: Mapped[str] = mapped_column(String, nullable=True)
+#     infos: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=True)
+#     cell_contents: Mapped[list["CellContent"]] = relationship(back_populates="reader")
 
 
 @final
 class CellContent(Base):
     __tablename__ = "cellContent"
+    __table_args__ = (UniqueConstraint("cell_id", "run_id", "reader"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     cell_id: Mapped[int] = mapped_column(ForeignKey("cellStructure.id"), nullable=False)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("digitizationRun.id"), nullable=False
+    )
+    reader: Mapped[str] = mapped_column(String, nullable=False)
+    reader_version: Mapped[str] = mapped_column(String, nullable=False)
     config: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         nullable=False,
         doc="Configuration used by the digitization pipeline",
     )
-    cellType: Mapped[str] = mapped_column(Enum("numeric", "text"), nullable=False)
     content: Mapped[str | None] = mapped_column(String, nullable=True)
-    run_id: Mapped[int] = mapped_column(
-        ForeignKey("digitizationRun.id"), nullable=False
-    )
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
 
     cell: Mapped["CellStructure"] = relationship(back_populates="cell_contents")
     run: Mapped["DigitizationRun"] = relationship(back_populates="cell_contents")

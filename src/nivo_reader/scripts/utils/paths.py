@@ -1,4 +1,4 @@
-from collections.abc import Generator
+from collections.abc import Generator, Callable
 from os import PathLike
 from pathlib import Path
 import hashlib
@@ -46,9 +46,44 @@ def build_config_dict(
     section: str | None = None,
     config_filename: str = "config.toml",
     base_config: Config | None = None,
-):
+) -> dict[Path, M | ValidationError | KeyError]:
+    """Computes the path -> configuration dictionary from a directory tree
+
+    Args:
+        root (PathLike[str] | Path): _description_
+        model (type[M]): _description_
+        start (PathLike[str] | Path | None, optional): _description_. Defaults to None.
+        section (str | None, optional): _description_. Defaults to None.
+        config_filename (str, optional): _description_. Defaults to "config.toml".
+        base_config (Config | None, optional): _description_. Defaults to None.
+
+    Returns:
+        dict[Path, M | ValidationError | KeyError]: _description_
+    """
     return dict(
         build_config_stack(root, model, start, section, config_filename, base_config)
+    )
+
+
+def build_object_config_dict[O, M: BaseModel](
+    root: PathLike[str] | Path,
+    model: type[M],
+    object_from_path: Callable[[Path], O],
+    start: PathLike[str] | Path | None = None,
+    section: str | None = None,
+    config_filename: str = "config.toml",
+    base_config: Config | None = None,
+) -> dict[O, M | ValidationError | KeyError]:
+    return dict(
+        (object_from_path(x[0]), x[1])
+        for x in build_config_stack(
+            root,
+            model,
+            start,
+            section,
+            config_filename,
+            base_config,
+        )
     )
 
 
@@ -147,6 +182,15 @@ def get_sha256(filepath: Path) -> str:
 
 
 def find_nested_files[T](mapping: dict[str, T], root: Path) -> dict[T, Path]:
+    """Associates objects with their paths.
+
+    Args:
+        mapping: dict[str, T] - Maps filenames (unique identifiers) to objects.
+        root: Path - Root directory to search.
+
+    Returns:
+        dict[T, Path] - Maps objects to their paths.
+    """
     out: dict[T, Path] = {}
     for path, _, files in root.walk():
         for file in files:
