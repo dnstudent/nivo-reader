@@ -172,6 +172,7 @@ class NivoTestStyler(ExcelStyler):
             ).iter_rows()
         }
 
+        allowed_numeric_chars = set(list("0123456789-?>"))
         for (data_row, data_col), ocr_result in data_lookup.items():
             if ocr_result["confidence"] < self.warning_threshold:
                 ws_row = start_row + data_row
@@ -182,6 +183,15 @@ class NivoTestStyler(ExcelStyler):
                 ocr_result["confidence"] is None
                 or ocr_result["content"] == ""
                 or ocr_result["content"] is None
+                or (
+                    data_col > 0
+                    and any(
+                        filter(
+                            lambda c: c not in allowed_numeric_chars,
+                            ocr_result["content"],
+                        )
+                    )
+                )
             ):
                 ws_row = start_row + data_row
                 ws_col = start_col + data_col
