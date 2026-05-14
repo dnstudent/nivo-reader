@@ -26,6 +26,7 @@ from .base import ReadingTransformation
 @final
 class ReplaceCharacters(ReadingTransformation):
     def __init__(self, column: str, mapping: dict[str, str], *conditions: pl.Expr):
+        super().__init__()
         self.column = column
         self.mapping = mapping
         self.conditions = conditions
@@ -39,4 +40,26 @@ class ReplaceCharacters(ReadingTransformation):
                 .otherwise(pl.col(self.column))
                 .alias(self.column)
             )
+        return df
+
+
+@final
+class ReplaceRegex(ReadingTransformation):
+    def __init__(
+        self, column: str, pattern: str, replacement: str, *conditions: pl.Expr
+    ):
+        super().__init__()
+        self.column = column
+        self.pattern = pattern
+        self.replacement = replacement
+        self.conditions = conditions
+
+    @override
+    def __call__(self, df: pl.DataFrame, *args: Any, **kwds: Any) -> pl.DataFrame:
+        df = df.with_columns(
+            pl.when(pl.Expr.and_(*self.conditions))
+            .then(pl.col(self.column).str.replace_all(self.pattern, self.replacement))
+            .otherwise(pl.col(self.column))
+            .alias(self.column)
+        )
         return df

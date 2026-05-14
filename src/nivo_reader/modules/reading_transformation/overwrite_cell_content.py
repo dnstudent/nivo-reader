@@ -42,3 +42,28 @@ class OverwriteCellContent(ReadingTransformation):
             .otherwise(pl.col(self.replace_in))
             .alias(self.replace_in)
         )
+
+
+class OverwriteAndDropConfidence(ReadingTransformation):
+    replace_in: str
+    replacement: pl.Expr
+    conditions: tuple[pl.Expr, ...]
+
+    def __init__(self, replace_in: str, replacement: pl.Expr, *conditions: pl.Expr):
+        super().__init__()
+        self.replace_in = replace_in
+        self.replacement = replacement
+        self.conditions = conditions
+
+    @override
+    def __call__(self, df: pl.DataFrame) -> pl.DataFrame:
+        return df.with_columns(
+            pl.when(pl.Expr.and_(*self.conditions))
+            .then(self.replacement)
+            .otherwise(pl.col(self.replace_in))
+            .alias(self.replace_in),
+            pl.when(pl.Expr.and_(*self.conditions))
+            .then(0.0)
+            .otherwise("confidence")
+            .alias("confidence"),
+        )

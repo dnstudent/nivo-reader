@@ -55,8 +55,10 @@ class AssociateClosestMatch(ReadingTransformation, JSONDataclass):
             .with_columns(
                 (
                     pl.col("simplified")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-                    .dist_str.levenshtein("simplified_reference")  # pyright: ignore[reportAttributeAccessIssue]
-                    .cast(pl.Int32)
+                    # TODO: assess metric.
+                    # .dist_str.levenshtein("simplified_reference")  # apyright: ignore[reportAttributeAccessIssue]
+                    .dist_str.jaro_winkler("simplified_reference")  # pyright: ignore[reportAttributeAccessIssue]
+                    # .cast(pl.Int32)
                     .alias("distance")
                 )
             )

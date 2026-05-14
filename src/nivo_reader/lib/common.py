@@ -1,7 +1,7 @@
-from fancy_dataclass import JSONDataclass
 from dataclasses import dataclass
 
 from cv2.typing import Rect
+from fancy_dataclass import JSONDataclass
 
 
 @dataclass

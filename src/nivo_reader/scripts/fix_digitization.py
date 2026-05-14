@@ -18,24 +18,30 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import argparse
+import logging
+import sys
 from pathlib import Path
 
 import polars as pl
-from pydantic import BaseModel, DirectoryPath, FilePath, Field
+from pydantic import BaseModel, DirectoryPath, Field, FilePath
 from tqdm import tqdm
-import logging
-import sys
-from .utils.paths import mkopath
 
 from nivo_reader.modules.reading_transformation import (
     AssociateClosestMatch,
+    NoOp,
     OverwriteCellContent,
     ReadingTransformationPipeline,
-    NoOp,
+)
+from nivo_reader.modules.reading_transformation.edit_confidence import EditConfidence
+from nivo_reader.modules.reading_transformation.overwrite_cell_content import (
+    OverwriteAndDropConfidence,
 )
 from nivo_reader.modules.reading_transformation.replace_characters import (
     ReplaceCharacters,
+    ReplaceRegex,
 )
+
+from .utils.paths import mkopath
 
 CONTENT_COLUMNS = pl.col("column") > 1
 NUMERIC_COLUMNS = pl.col("column") != 0
@@ -102,7 +108,7 @@ def fix_digitizations_batch(
     dash_sub = OverwriteCellContent(
         "content",
         pl.lit("-"),
-        (pl.col("content").str.contains_any(["-", "_", "=", "—", "−", "*"]))
+        (pl.col("content").str.contains_any(["-", "_", "=", "—", "−", "*", "→"]))
         | (
             EASYOCR
             & (pl.col("confidence") < pipeline_config.confidence_threshold)
@@ -114,16 +120,53 @@ def fix_digitizations_batch(
         CONTENT_COLUMNS,
     )
 
-    drop_chars = ReplaceCharacters(
+    remove_dotdotdot = ReplaceRegex(
+        "content", r"(\s*\.+\s*){2,}", "", pl.col("column") == 0
+    )
+    remove_unwanted_chars = ReplaceRegex(
+        "content", r"[^\w\.\s']", "", pl.col("column") == 0
+    )
+
+    remove_content = OverwriteAndDropConfidence(
         "content",
-        {":": "", "|": "", "i": "1", "l": "1", "I": "1", "C": "0", "»": ">"},
+        pl.lit(""),
+        PADDLEOCR
+        & NUMERIC_COLUMNS
+        & (pl.col("content").str.len_chars() > 3)
+        & (pl.col("content").str.contains(r"[a-zA-Z]")),
+    )
+
+    drop_value_chars = ReplaceCharacters(
+        "content",
+        {
+            ":": "",
+            "|": "",
+            "i": "1",
+            "l": "1",
+            "I": "1",
+            "C": "0",
+            "»": ">",
+            "•": "",
+            ".": "",
+            "'": "",
+        },
         NUMERIC_COLUMNS,
+    )
+    drop_elev_chars = ReplaceCharacters("content", {"-": ""}, pl.col("column") == 1)
+    drop_paddle_confidence = EditConfidence(
+        0.0,
+        PADDLEOCR & NUMERIC_COLUMNS & pl.col("content").str.contains(r"[^\d\-?>»\s]"),
     )
 
     pipeline = ReadingTransformationPipeline(
+        remove_dotdotdot,
+        remove_unwanted_chars,
         station_name_replacements,
         dash_sub,
-        drop_chars,
+        remove_content,
+        drop_value_chars,
+        drop_elev_chars,
+        drop_paddle_confidence,
     )
 
     # Discover and process files
