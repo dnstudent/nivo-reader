@@ -3,7 +3,7 @@ name = "nivo-reader"
 version = "0.5.0"
 description = "Libreria per l'estrazione automatica di dati da tabelle NIVO (tabelle meteorologiche storiche) da immagini scansionate"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 license = "AGPL-3.0-or-later"
 authors = [{ name = "Davide Nicoli", email = "davide.nicoli@unimi.it" }]
 classifiers = [
@@ -46,6 +46,7 @@ nivo-read = "nivo_reader.scripts.digitize:main"
 nivo-fix = "nivo_reader.scripts.fix_digitization:main"
 nivo-write = "nivo_reader.scripts.write_excel:main"
 nivo-merge = "nivo_reader.scripts.merge:main"
+nivo-digitize = "nivo_reader.scripts.digitize:main"
 
 [dependency-groups]
 dev = [
@@ -54,6 +55,7 @@ dev = [
   "ipywidgets>=8.1.8",
   "marimo>=0.20.2",
   "matplotlib>=3.10.7",
+  "plotnine>=0.15.4",
   "python-lsp-ruff>=2.3.0",
   "python-lsp-server>=1.14.0",
   "ruff>=0.15.4",
