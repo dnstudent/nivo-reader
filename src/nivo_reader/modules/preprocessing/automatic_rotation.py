@@ -39,7 +39,8 @@ logger = logging.getLogger("nivo_reader.preprocessing.automatic_rotation")
 @final
 @dataclass
 class Img2TableRotation(Preprocessor):
-    name: str = "img2table_rotation"
+    def __init__(self) -> None:
+        super().__init__(name="img2table_rotation")
 
     # Code partly taken from img2table. Credit goes to the authors
     @override

@@ -21,13 +21,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, override
 
-from fancy_dataclass import JSONBaseDataclass
+from fancy_dataclass import TOMLDataclass
 
 from cv2.typing import MatLike
 
 
 @dataclass
-class Preprocessor(JSONBaseDataclass, ABC):
+class Preprocessor(TOMLDataclass, ABC):
     name: str
 
     @abstractmethod
@@ -38,28 +38,7 @@ class Preprocessor(JSONBaseDataclass, ABC):
 
 
 @dataclass
-class RotationPreprocessor(ABC):
-    name: str
-
-    @abstractmethod
-    def __call__(
-        self, image: MatLike, configuration: Mapping[str, Any], **kwargs: Any
-    ) -> tuple[float, dict[str, Any]]:
-        """Return a counter-clockwise rotation (in degrees) about the image center and a dictionary of informations.
-
-        Args:
-            image (MatLike): input image
-            configuration (Mapping[str, Any]): configuration of the preprocessor
-            **kwargs (Any): additional keyword arguments
-
-        Returns:
-            tuple[float, dict[str, Any]]: counter-clockwise rotation angle (degrees) and a dictionary of informations
-        """
-        pass
-
-
-@dataclass
-class PreprocessingPipeline(Preprocessor):
+class PreprocessingPipeline(Preprocessor, TOMLDataclass):
     preprocessors: list[Preprocessor]
 
     @override
