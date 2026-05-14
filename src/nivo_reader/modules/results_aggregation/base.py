@@ -25,10 +25,20 @@ from fancy_dataclass import JSONBaseDataclass, JSONDataclass
 
 @dataclass
 class ResultsAggregator(JSONBaseDataclass, ABC):
+    index_columns: list[str]
+
     @abstractmethod
-    def __call__(self, df: pl.DataFrame) -> pl.DataFrame:
+    def _call(self, df: pl.DataFrame) -> pl.DataFrame:
         """Aggregate the results from a DataFrame. Must always return a DataFrame where each "column" and "row" combination appears at most once."""
         raise NotImplementedError()
+
+    def __call__(self, df: pl.DataFrame) -> pl.DataFrame:
+        aggregated = self._call(df)
+        # Asserting uniqueness of index
+        assert aggregated.select(self.index_columns).is_unique().all(), (
+            f"Index columns {self.index_columns} are not unique in aggregated results"
+        )
+        return aggregated
 
 
 @final
@@ -40,7 +50,7 @@ class AggregatorPipeline(ResultsAggregator, JSONDataclass):
     )
 
     @override
-    def __call__(self, df: pl.DataFrame) -> pl.DataFrame:
+    def _call(self, df: pl.DataFrame) -> pl.DataFrame:
         aggregates: list[pl.DataFrame] = []
         for aggregator in self.aggregators:
             aggregates.append(aggregator(df))

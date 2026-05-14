@@ -31,27 +31,31 @@ class MostOccurringValues(ResultsAggregator, JSONDataclass):
     )
 
     @override
-    def __call__(self, df: pl.DataFrame) -> pl.DataFrame:
+    def _call(self, df: pl.DataFrame) -> pl.DataFrame:
         most_occurring = (
-            df.sort("column", "row", "content")
-            .group_by("column", "row", maintain_order=True)
+            df.sort(*self.index_columns, "content")
+            .group_by(self.index_columns, maintain_order=True)
             .agg(pl.col("content").rle())
             .explode("content")
             .unnest("content")
             .filter(pl.col("len") >= self.at_least)
-            .sort("column", "row", "len", descending=[False, False, True])
-            .group_by("column", "row", maintain_order=True)
+            .sort(
+                *self.index_columns,
+                "len",
+                descending=[False] * len(self.index_columns) + [True],
+            )
+            .group_by(self.index_columns, maintain_order=True)
             .first()
-            .select("column", "row", "value")
+            .select(self.index_columns + ["value"])
             .rename({"value": "content"})
         )
         highest_confidence = (
-            df.select("column", "row", "content", "confidence")
-            .group_by("column", "row", "content")
+            df.select(self.index_columns + ["content", "confidence"])
+            .group_by(self.index_columns + ["content"])
             .agg(pl.col("confidence").max())
         )
         return most_occurring.join(
             highest_confidence,
-            on=["column", "row", "content"],
+            on=self.index_columns + ["content"],
             how="left",
         )

@@ -28,10 +28,10 @@ from .base import ResultsAggregator
 @dataclass
 class HighestScoring(ResultsAggregator, JSONDataclass):
     @override
-    def __call__(self, df: pl.DataFrame) -> pl.DataFrame:
+    def _call(self, df: pl.DataFrame) -> pl.DataFrame:
         return (
-            df.sort("column", "row", "confidence")
-            .group_by(["column", "row"], maintain_order=True)
+            df.sort(*self.index_columns, "confidence")
+            .group_by(self.index_columns, maintain_order=True)
             .last()
-            .select(["column", "row", "content", "confidence"])
+            .select(self.index_columns + ["content", "confidence"])
         )
