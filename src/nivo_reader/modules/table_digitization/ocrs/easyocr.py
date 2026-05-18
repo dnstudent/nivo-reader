@@ -24,7 +24,7 @@ type EasyFreeBox = list[list[int]]
 
 
 @dataclass
-class EasyOCR(OCRModule[EasyBbox], TOMLDataclass, ABC):
+class EasyOCR(OCRModule[EasyBbox], ABC):
     call_config: dict[str, str | int | float | bool]
     lang_list: list[str]
     verbose: bool = False
@@ -56,13 +56,11 @@ class EasyOCR(OCRModule[EasyBbox], TOMLDataclass, ABC):
         )
 
     @override
-    @classmethod
-    def _preprocess_bbox(cls, bbox: BoundingBox) -> EasyBbox:
+    def _preprocess_bbox(self, bbox: BoundingBox) -> EasyBbox:
         return [bbox.x, bbox.x + bbox.width, bbox.y, bbox.y + bbox.height]
 
     @override
-    @classmethod
-    def _postprocess_bbox(cls, bbox: EasyBbox) -> BoundingBox:
+    def _postprocess_bbox(self, bbox: EasyBbox) -> BoundingBox:
         x1, x2, y1, y2 = bbox
         return BoundingBox(x1, y1, x2 - x1, y2 - y1)
 
@@ -78,7 +76,7 @@ class EasyOCR(OCRModule[EasyBbox], TOMLDataclass, ABC):
 
 
 @dataclass
-class EasyOCRWord(EasyOCR, TOMLDataclass):
+class EasyOCRWord(TOMLDataclass, EasyOCR):
     @override
     def _call(
         self, scan: MatLike, cells: list[OCRCellSpec[EasyBbox]], **kwargs: Any
@@ -113,7 +111,7 @@ class EasyOCRWord(EasyOCR, TOMLDataclass):
 
 
 @dataclass
-class EasyOCRParagraph(EasyOCR, TOMLDataclass):
+class EasyOCRParagraph(TOMLDataclass, EasyOCR):
     @dataclass
     class ReadTextResult(JSONDataclass):
         text: str

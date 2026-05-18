@@ -6,7 +6,7 @@ from typing import Any, cast, override
 
 import cv2
 from cv2.typing import MatLike
-from fancy_dataclass import JSONDataclass, TOMLDataclass
+from fancy_dataclass import JSONDataclass
 
 from nivo_reader.lib.common import BoundingBox
 from nivo_reader.modules.preprocessing.base import Preprocessor
@@ -27,19 +27,17 @@ class OCRResult[B](JSONDataclass):
 
 
 @dataclass
-class OCRModule[B](TOMLDataclass, ABC):
+class OCRModule[B](ABC):
     name: str
     version: str
 
     def _preprocess_scan(self, scan: MatLike) -> MatLike:
         return scan
 
-    @classmethod
-    def _preprocess_bbox(cls, bbox: BoundingBox) -> B:
+    def _preprocess_bbox(self, bbox: BoundingBox) -> B:
         return cast(B, bbox)
 
-    @classmethod
-    def _postprocess_bbox(cls, bbox: B) -> BoundingBox:
+    def _postprocess_bbox(self, bbox: B) -> BoundingBox:
         return cast(BoundingBox, bbox)
 
     @abstractmethod

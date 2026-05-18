@@ -278,8 +278,8 @@ def main():
             name="tesserocr",
             version=tesserocr.tesseract_version(),
             ocrs=(
-                build_tesserocr_text_ocr("ita"),
-                build_tesserocr_number_ocr("ita", extra_whitelist="?»>-_"),
+                build_tesserocr_text_ocr(18, "ita"),
+                build_tesserocr_number_ocr(18, "ita", extra_whitelist="?»>-_"),
             ),
             filters=[lambda cell: cell.col == 0, lambda cell: cell.col != 0],
         ),

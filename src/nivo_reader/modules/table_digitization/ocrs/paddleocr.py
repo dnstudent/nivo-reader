@@ -25,8 +25,8 @@ logging.getLogger("paddle").setLevel(logging.ERROR)
 
 @dataclass
 class PaddleOCR(
-    OCRModule[BoundingBox],
     TOMLDataclass,
+    OCRModule[BoundingBox],
 ):
     model_name: str = "latin_PP-OCRv5_mobile_rec"
     kwargs: dict[str, Any] = field(default_factory=dict)

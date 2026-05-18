@@ -3,6 +3,7 @@
 import os
 import re
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any, override
 
 import cv2
@@ -25,10 +26,11 @@ def _read_tessversion() -> str:
     return match.group(1) if match else ""
 
 
-@dataclass
+@dataclass(kw_only=True)
 class TesserocrOCR(OCRModule[BoundingBox], TOMLDataclass):
     """OCR Module using Tesserocr library"""
 
+    capital_letter_height: int
     lang: str = "ita"
     oem: tesserocr.OEM = tesserocr.OEM.DEFAULT
     psm: tesserocr.PSM = tesserocr.PSM.AUTO
@@ -47,6 +49,39 @@ class TesserocrOCR(OCRModule[BoundingBox], TOMLDataclass):
             oem=self.oem,
             psm=self.psm,
             variables=self.variables,
+        )
+
+    @cached_property
+    def f(self) -> float:
+        return 31 / self.capital_letter_height
+
+    @override
+    def _preprocess_bbox(self, bbox: BoundingBox) -> BoundingBox:
+        return BoundingBox(
+            x=int(bbox.x * self.f),
+            y=int(bbox.y * self.f),
+            width=int(bbox.width * self.f),
+            height=int(bbox.height * self.f),
+        )
+
+    @override
+    def _postprocess_bbox(self, bbox: BoundingBox) -> BoundingBox:
+        return BoundingBox(
+            x=int(bbox.x / self.f),
+            y=int(bbox.y / self.f),
+            width=int(bbox.width / self.f),
+            height=int(bbox.height / self.f),
+        )
+
+    @override
+    def _preprocess_scan(self, scan: MatLike) -> MatLike:
+        # Apparently resizing an image so that capital letters are 31 pixels high provides better OCR results https://groups.google.com/g/tesseract-ocr/c/Wdh_JJwnw94/m/24JHDYQbBQAJ?pli=1
+        return cv2.resize(
+            scan,
+            None,
+            fx=self.f,
+            fy=self.f,
+            interpolation=cv2.INTER_CUBIC if self.f > 1 else cv2.INTER_AREA,
         )
 
     @override
@@ -91,9 +126,13 @@ class TesserocrOCR(OCRModule[BoundingBox], TOMLDataclass):
 
 
 def build_tesserocr_number_ocr(
-    lang: str, extra_whitelist: str, tessdata_dir: str | None = None
+    capital_letter_height: int,
+    lang: str,
+    extra_whitelist: str,
+    tessdata_dir: str | None = None,
 ) -> TesserocrOCR:
     return TesserocrOCR(
+        capital_letter_height=capital_letter_height,
         tessdata_dir=tessdata_dir,
         lang=lang,
         oem=tesserocr.OEM.LSTM_ONLY,
@@ -103,9 +142,12 @@ def build_tesserocr_number_ocr(
 
 
 def build_tesserocr_text_ocr(
-    lang: str, tessdata_dir: str | None = None
+    capital_letter_height: int,
+    lang: str,
+    tessdata_dir: str | None = None,
 ) -> TesserocrOCR:
     return TesserocrOCR(
+        capital_letter_height=capital_letter_height,
         tessdata_dir=tessdata_dir,
         lang=lang,
         oem=tesserocr.OEM.LSTM_ONLY,
